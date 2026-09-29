@@ -4,7 +4,7 @@
 
 > 适合贴在屏幕一角随时查看 👀
 
-> **出处与致谢**：本项目基于上游开源项目 **[sbr0574/StockWidget](https://github.com/sbr0574/StockWidget)**（[Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)）二次开发，当前版本 **v1.5.0**。感谢原始作者 **sbr0574**。再分发相关约定见文末 [许可与出处声明](#-许可与出处声明)。
+> **出处与致谢**：本项目基于上游开源项目 **[sbr0574/StockWidget](https://github.com/sbr0574/StockWidget)**（[Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)）二次开发，当前版本 **v1.5.1**。感谢原始作者 **sbr0574**。再分发相关约定见文末 [许可与出处声明](#-许可与出处声明)。
 
 ---
 

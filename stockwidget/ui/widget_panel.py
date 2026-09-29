@@ -3,6 +3,8 @@ from PySide6.QtWidgets import QStyledItemDelegate
 import requests
 import keyboard
 import time
+import sys
+import ctypes
 from collections import deque
 from functools import partial
 import webbrowser
@@ -314,9 +316,10 @@ class FloatLabel(QWidget):
 
         self.hotkey_triggered.connect(self.toggle_win)
         self._register_hotkey()
-        # 启动时恢复上次会话的鼠标穿透状态（快捷键注册后，保证还能用 Ctrl+Alt+C 关）
+        # 启动时若需恢复鼠标穿透：此处窗口尚未 show，Qt 会在建窗时重算扩展样式，
+        # 故真正施加延到 showEvent（首帧后重新断言），避免被覆盖。
         if self.mouse_through_enabled:
-            self.set_mouse_through(True)
+            self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
         # UI
         self.panel = QWidget(self)
@@ -2724,6 +2727,9 @@ class FloatLabel(QWidget):
         if self._keep_top_timer and not self._keep_top_timer.isActive():
             self._keep_top_timer.start()
         self._defer_fit()
+        # 建窗/显隐后 Qt 会重置扩展样式，延一帧重新断言穿透，保证与状态一致
+        if getattr(self, "mouse_through_enabled", False):
+            QTimer.singleShot(0, lambda: self._apply_click_through_native(True))
 
     def hideEvent(self, event):
         super().hideEvent(event)
@@ -2777,7 +2783,10 @@ class FloatLabel(QWidget):
         if self.mouse_through_enabled == enabled:
             return
         self.mouse_through_enabled = enabled
+        # 顶层窗口自身置透明（Qt 层，跨平台兼容）；真正生效靠 Windows 原生
+        # WS_EX_TRANSPARENT——因为可见内容全在子控件里，仅设顶层属性不会传递到子控件。
         self.setAttribute(Qt.WA_TransparentForMouseEvents, enabled)
+        self._apply_click_through_native(enabled)
         # 穿透下无法双击隐藏，退而暂停贴边检测，避免定时器对着不可见状态反复弹
         if enabled and hasattr(self, 'edge_check_timer'):
             try:
@@ -2786,6 +2795,48 @@ class FloatLabel(QWidget):
                 pass
         self._rebuild_hotkeys()
         self._notify_change()
+
+    def _apply_click_through_native(self, enabled: bool):
+        """Windows 原生鼠标穿透：给顶层 HWND 增删 WS_EX_TRANSPARENT 扩展样式。
+        Qt 子控件不是独立 HWND，样式设在顶层窗口即可让整窗（含表格）穿透。
+        依赖 WA_TranslucentBackground 已使 Qt 自动置上 WS_EX_LAYERED。"""
+        if sys.platform != "win32":
+            return False
+        try:
+            from ctypes import wintypes
+            hwnd = wintypes.HWND(int(self.winId()))
+            user32 = ctypes.windll.user32
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            SWP_NOSIZE, SWP_NOMOVE = 0x0001, 0x0002
+            SWP_NOZORDER, SWP_FRAMECHANGED = 0x0004, 0x0020
+            # 64 位优先用 *WindowLongPtrW，避免指针/长整型被 32 位截断；32 位回退
+            if ctypes.sizeof(ctypes.c_void_p) == 8:
+                get = user32.GetWindowLongPtrW
+                set_ = user32.SetWindowLongPtrW
+            else:
+                get = user32.GetWindowLongW
+                set_ = user32.SetWindowLongW
+            get.argtypes = [wintypes.HWND, ctypes.c_int]
+            get.restype = ctypes.c_ssize_t
+            set_.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+            set_.restype = ctypes.c_ssize_t
+            user32.SetWindowPos.argtypes = [
+                wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+            ex = get(hwnd, GWL_EXSTYLE)
+            if enabled:
+                ex |= (WS_EX_LAYERED | WS_EX_TRANSPARENT)
+            else:
+                ex &= ~WS_EX_TRANSPARENT
+            set_(hwnd, GWL_EXSTYLE, ex)
+            user32.SetWindowPos(
+                hwnd, None, 0, 0, 0, 0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED)
+            return True
+        except Exception:
+            return False
 
     def _rebuild_hotkeys(self):
         # 注册状态变化不需要反复重建（穿透回调自身会走 set_mouse_through），
