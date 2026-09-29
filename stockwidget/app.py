@@ -1,18 +1,26 @@
-import sys, os, json, keyboard, winreg
+import sys
+import os
+import json
+import keyboard
+import winreg
 
 from PySide6.QtCore import Qt, QPoint, QSize
 from PySide6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QPen, QBrush
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QStyle
-from WidgetPanel import FloatLabel
-from SettingPanel import SettingsDialog
+from stockwidget.ui.widget_panel import FloatLabel
+from stockwidget.ui.settings_panel import SettingsDialog
 
 # ----- 程序与资源 -----
 APP_NAME = "StockWidget"
-APP_ICON_FILE = "StockWidget.ico"
+APP_ICON_FILE = os.path.join("resources", "icons", "StockWidget.ico")
+
 
 def resource_path(rel_path):
-    base = getattr(sys, "_MEIPASS", "")
+    # PyInstaller 打包后资源解包到 sys._MEIPASS；源码运行时以项目根目录为基准
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, rel_path)
+
 
 # ----- 配置存档 -----
 # 1. 智能判断当前是 .exe 环境还是 .py 开发环境
@@ -20,11 +28,12 @@ if getattr(sys, 'frozen', False):
     # 如果是 PyInstaller 打包后的 .exe 运行，获取 exe 所在的目录
     CONFIG_DIR = os.path.dirname(sys.executable)
 else:
-    # 如果是直接通过 Python 运行脚本，获取当前 .py 文件所在的目录
-    CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+    # 如果是直接通过 Python 运行脚本，获取项目根目录（stockwidget 包的上一级）
+    CONFIG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 2. 配置文件直接与 exe 放在同一个文件夹下
 CONFIG_FILE = os.path.join(CONFIG_DIR, "SW_config.json")
+
 
 def load_config():
     try:
@@ -33,6 +42,7 @@ def load_config():
     except Exception:
         return {}
 
+
 def save_config(cfg: dict):
     if not os.path.exists(CONFIG_DIR):
         os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -40,6 +50,7 @@ def save_config(cfg: dict):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     os.replace(tmp, CONFIG_FILE)
+
 
 class App(QApplication):
     def __init__(self, argv):
@@ -52,6 +63,7 @@ class App(QApplication):
         cfg = load_config()
         icon_choice = cfg.get('app_icon')
         self._app_icon_choice = icon_choice
+
         def _resolve_icon(choice):
             # choice can be None, 'default', 'std:NAME' or a file path
             if not choice or choice == 'default':
@@ -60,7 +72,7 @@ class App(QApplication):
                     return QIcon(p)
                 return self.style().standardIcon(QStyle.SP_ComputerIcon)
             if isinstance(choice, str) and choice.startswith('std:'):
-                key = choice.split(':',1)[1]
+                key = choice.split(':', 1)[1]
                 mapping = {
                     'computer': QStyle.SP_ComputerIcon,
                     'network': QStyle.SP_DriveNetIcon,
@@ -120,7 +132,8 @@ class App(QApplication):
         self.save_now()
 
     def on_tray_activated(self, reason):
-        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick): self.toggle_win()
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.toggle_win()
 
     def toggle_win(self):
         if self.win.isVisible():
@@ -167,6 +180,7 @@ class App(QApplication):
         """Set application and tray icon. `choice` can be None/'default', 'std:KEY' or a file path."""
         self._app_icon_choice = choice
         # resolve to QIcon
+
         def _resolve_icon(choice):
             if not choice or choice == 'default':
                 p = resource_path(APP_ICON_FILE)
@@ -174,7 +188,7 @@ class App(QApplication):
                     return QIcon(p)
                 return self.style().standardIcon(QStyle.SP_ComputerIcon)
             if isinstance(choice, str) and choice.startswith('std:'):
-                key = choice.split(':',1)[1]
+                key = choice.split(':', 1)[1]
                 mapping = {
                     'computer': QStyle.SP_ComputerIcon,
                     'network': QStyle.SP_DriveNetIcon,

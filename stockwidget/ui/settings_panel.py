@@ -1,4 +1,5 @@
-import os, re
+import os
+import re
 from functools import partial
 
 from PySide6.QtCore import Qt, QSize
@@ -6,14 +7,16 @@ from PySide6.QtGui import QColor, QFontDatabase, QKeySequence, QDoubleValidator,
 from PySide6.QtWidgets import (
     QScrollArea, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QTabWidget, QPushButton, QSlider,
     QGroupBox, QLabel, QColorDialog, QComboBox, QAbstractItemView,
-    QCheckBox, QListWidget, QListWidgetItem, QKeySequenceEdit, QFileDialog, QLineEdit, QMenu
+    QCheckBox, QListWidget, QListWidgetItem, QKeySequenceEdit, QFileDialog, QLineEdit, QMenu, QFrame,
+    QApplication
 )
-from WidgetPanel import FloatLabel
+from stockwidget.ui.widget_panel import FloatLabel
 from PySide6.QtWidgets import QSizePolicy
 
 
 class CostDialog(QDialog):
     """设置持仓成本与数量的对话框。"""
+
     def __init__(self, parent: QWidget, code: str, cost: float = 0.0, qty: int = 0):
         super().__init__(parent)
         self.setWindowTitle(f"设置成本 - {code}")
@@ -75,6 +78,7 @@ class CostDialog(QDialog):
 
 class AlertDialog(QDialog):
     """设置封单预警阈值的对话框。可添加多个阈值：正=涨停封单手数，负=跌停封单手数。"""
+
     def __init__(self, parent: QWidget, code: str, thresholds: list = None):
         super().__init__(parent)
         self.setWindowTitle(f"封单预警 - {code}")
@@ -119,8 +123,9 @@ class AlertDialog(QDialog):
         self.btn_clear_all = QPushButton("清除全部")
         self.btn_ok = QPushButton("确定")
         self.btn_cancel = QPushButton("取消")
-        for b in (self.btn_clear_all, self.btn_ok, self.btn_cancel):
-            b.setFixedWidth(70)
+        alert_btns = (self.btn_clear_all, self.btn_ok, self.btn_cancel)
+        fit_button_width(alert_btns, min_width=70)
+        for b in alert_btns:
             btn_row.addWidget(b)
         layout.addLayout(btn_row)
 
@@ -174,6 +179,27 @@ class AlertDialog(QDialog):
 
 
 MIN_FONT_SIZE = 6
+
+# QGroupBox 标题所需的最小顶部留白（显式设置 contentsMargins 会覆盖样式自动预留值）
+GROUP_TITLE_TOP_MARGIN = 24
+
+# 页签固定尺寸与内容可视区的换算余量：
+# 实测 480x300 的对话框中可视区为 446x250，即宽余 34、高余 50；再给滚动条各预留 16。
+TAB_CHROME_W = 50
+TAB_CHROME_H = 66
+# 页签自适应高度上限，防止内容很高时对话框超出屏幕
+TAB_MAX_H = 820
+
+
+def fit_button_width(buttons, min_width: int = 60):
+    """按文字的自然尺寸统一一组按钮的宽度，避免硬编码宽度截断中文。"""
+    buttons = list(buttons)
+    width = max([b.sizeHint().width() for b in buttons] + [min_width])
+    for b in buttons:
+        b.setFixedWidth(width)
+    return width
+
+
 class SettingsDialog(QDialog):
     def __init__(self, win: FloatLabel, parent: QWidget, app=None):
         super().__init__(parent)
@@ -190,7 +216,7 @@ class SettingsDialog(QDialog):
 
         self.tab_sizes = {
             0: QSize(480, 300),
-            1: QSize(480, 750),
+            1: QSize(580, 750),
             2: QSize(480, 460),
             3: QSize(480, 280),
             4: QSize(480, 720),
@@ -205,38 +231,40 @@ class SettingsDialog(QDialog):
         g_codes = QGroupBox("自选列表")
         # 【修改点1】：确保外层布局允许控件填充
         g_codes.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        g_codes.setContentsMargins(3,25,3,6)
+        g_codes.setContentsMargins(3, 25, 3, 6)
         lay_codes = QHBoxLayout(g_codes)
         lay_codes.setSpacing(6)
         # 1.1 代码列表
         self.list_codes = QListWidget()
-        self.list_codes.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed)
+        self.list_codes.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed)
         # self.list_codes.setFixedWidth(150)
         self.list_codes.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         for c in self.win.codes:
             it = QListWidgetItem(c)
-            it.setFlags(it.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEditable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-            it.setCheckState(Qt.Checked if c in getattr(self.win, 'checked_codes', []) else Qt.Unchecked)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable |
+                        Qt.ItemIsEditable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            it.setCheckState(Qt.Checked if c in getattr(
+                self.win, 'checked_codes', []) else Qt.Unchecked)
             it.setData(Qt.UserRole, c)  # 记住上次有效值
             self.list_codes.addItem(it)
         # 1.2 操作按钮
         btn_col = QVBoxLayout()
         btn_col.setSpacing(4)
         self.btn_add = QPushButton("添加")
-        self.btn_add.setFixedWidth(60)
         self.btn_del = QPushButton("删除")
-        self.btn_del.setFixedWidth(60)
-        self.btn_up  = QPushButton("上移")
-        self.btn_up.setFixedWidth(60)
-        self.btn_dn  = QPushButton("下移")
-        self.btn_dn.setFixedWidth(60)
+        self.btn_up = QPushButton("上移")
+        self.btn_dn = QPushButton("下移")
         self.btn_cost = QPushButton("设置成本")
-        self.btn_cost.setFixedWidth(60)
         self.btn_cost.setEnabled(False)
         self.btn_alert = QPushButton("封单预警")
-        self.btn_alert.setFixedWidth(60)
         self.btn_alert.setEnabled(False)
-        for b in (self.btn_add, self.btn_del, self.btn_up, self.btn_dn, self.btn_cost, self.btn_alert):
+        # 统一按最长文字（设置成本/封单预警）的自然宽度，
+        # 原先固定 60px 只够两个字，4 字按钮会被截断。
+        code_btns = (self.btn_add, self.btn_del, self.btn_up,
+                     self.btn_dn, self.btn_cost, self.btn_alert)
+        fit_button_width(code_btns)
+        for b in code_btns:
             btn_col.addWidget(b)
         btn_col.addStretch(1)
 
@@ -252,22 +280,22 @@ class SettingsDialog(QDialog):
 
         # 2.刷新间隔
         g_interval = QGroupBox("刷新间隔")
-        g_interval.setContentsMargins(3,12,3,6)
+        g_interval.setContentsMargins(3, 12, 3, 6)
         self.cmb_interval = QComboBox()
         self.cmb_interval.setFixedWidth(136)
-        for s in [1,2,3,5,10,15,30,60]:
+        for s in [1, 2, 3, 5, 10, 15, 30, 60]:
             self.cmb_interval.addItem(f"{s} 秒", userData=s)
         idx = self.cmb_interval.findData(self.win.refresh_seconds)
         self.cmb_interval.setCurrentIndex(idx if idx >= 0 else 1)
         v = QVBoxLayout(g_interval)
-        v.setContentsMargins(6,6,6,6)
+        v.setContentsMargins(6, 6, 6, 6)
         v.addWidget(self.cmb_interval)
         data_settings.addWidget(g_interval)
 
         # 3.显示选项
         # 3.0 双模式切换开关
         g_dual_mode = QGroupBox("双模式切换")
-        g_dual_mode.setContentsMargins(3,12,3,6)
+        g_dual_mode.setContentsMargins(3, 12, 3, 6)
         gl_dual_mode = QGridLayout(g_dual_mode)
         gl_dual_mode.setHorizontalSpacing(6)
         gl_dual_mode.setVerticalSpacing(6)
@@ -283,14 +311,15 @@ class SettingsDialog(QDialog):
         idx_delay = self.cmb_leave_delay.findData(self.win.leave_delay_ms)
         if idx_delay < 0:
             idx_delay = self.cmb_leave_delay.findData(500)
-        self.cmb_leave_delay.setCurrentIndex(idx_delay if idx_delay >= 0 else 2)
+        self.cmb_leave_delay.setCurrentIndex(
+            idx_delay if idx_delay >= 0 else 2)
         self.cmb_leave_delay.setEnabled(bool(self.win.dual_mode_enabled))
         gl_dual_mode.addWidget(self.cmb_leave_delay, 1, 1)
         data_settings.addWidget(g_dual_mode)
 
         # 3.1复选框组 - 正常模式
         g_flags = QGroupBox("正常模式指标")
-        g_flags.setContentsMargins(3,12,3,6)
+        g_flags.setContentsMargins(3, 12, 3, 6)
         gl_flags = QGridLayout(g_flags)
         gl_flags.setHorizontalSpacing(8)
         gl_flags.setVerticalSpacing(6)
@@ -315,9 +344,10 @@ class SettingsDialog(QDialog):
         self.cmb_namelength = QComboBox()
         self.cmb_namelength.setFixedWidth(80)
         for l in [0, 1, 2, 3, 4]:
-            self.cmb_namelength.addItem(f"{l}个字" if l>0 else "完整", userData=l)
+            self.cmb_namelength.addItem(
+                f"{l}个字" if l > 0 else "完整", userData=l)
         idx_name = self.cmb_namelength.findData(self.win.name_length)
-        self.cmb_namelength.setCurrentIndex(idx_name if idx_name>=0 else 1)
+        self.cmb_namelength.setCurrentIndex(idx_name if idx_name >= 0 else 1)
         self.cmb_namelength.setEnabled(self.win.header_is_visible("名称"))
         gl_flag_name.addWidget(self.cmb_namelength, 1, 1)
         gl_flags.addWidget(g_flag_name, 0, 0)
@@ -345,14 +375,14 @@ class SettingsDialog(QDialog):
         self.cb_b1s1.stateChanged.connect(self._on_b1s1_toggled)
         self.cbs.append(self.cb_b1s1)
         gl_flag_order.addWidget(self.cb_b1s1, 0, 0)
-        
+
         # 委比
         cb_commi = QCheckBox("委比")
         cb_commi.setChecked(self.win.header_is_visible("委比"))
         cb_commi.stateChanged.connect(partial(self._on_cb_changed, "委比"))
         self.cbs.append(cb_commi)
         gl_flag_order.addWidget(cb_commi, 1, 0)
-        
+
         # 买一/卖一显示模式：数量 / 价格 / 数量和价格
         self.cmb_b1s1_display = QComboBox()
         self.cmb_b1s1_display.setFixedWidth(150)
@@ -361,32 +391,33 @@ class SettingsDialog(QDialog):
         self.cmb_b1s1_display.addItem("数量和价格", userData="both")
         cur_mode = getattr(self.win, 'b1s1_display', 'qty')
         idx_mode = self.cmb_b1s1_display.findData(cur_mode)
-        self.cmb_b1s1_display.setCurrentIndex(idx_mode if idx_mode>=0 else 0)
+        self.cmb_b1s1_display.setCurrentIndex(idx_mode if idx_mode >= 0 else 0)
         self.cmb_b1s1_display.setEnabled(self.win.b1s1_visible)
         gl_flag_order.addWidget(self.cmb_b1s1_display, 0, 1)
         gl_flags.addWidget(g_flag_order, 0, 1)
 
         g_flag_deal = QGroupBox("成交")
         gl_flag_deal = QGridLayout(g_flag_deal)
-        
+
         # 1. 稍微放宽四周的边距 (左, 上, 右, 下)，给 GroupBox 的标题留出空间
-        gl_flag_deal.setContentsMargins(10, 15, 10, 10) 
+        gl_flag_deal.setContentsMargins(10, 15, 10, 10)
         gl_flag_deal.setHorizontalSpacing(10)
         gl_flag_deal.setVerticalSpacing(8)
-        
-        for i, idx in enumerate(range(9,14)):
+
+        for i, idx in enumerate(range(9, 14)):
             cb = QCheckBox(cb_texts[idx])
-            
+
             # 【核心修复 1】：强制给 CheckBox 设置一个最小高度，防止文字被上下裁切
-            cb.setMinimumHeight(22) 
-            
+            cb.setMinimumHeight(22)
+
             cb.setChecked(self.win.header_is_visible(cb_texts[idx]))
-            cb.stateChanged.connect(partial(self._on_cb_changed, cb_texts[idx]))
+            cb.stateChanged.connect(
+                partial(self._on_cb_changed, cb_texts[idx]))
             self.cbs.append(cb)
-            
+
             # 【核心修复 2】：使用 Qt.AlignTop，让复选框在自己的网格里靠上对齐，不要被强行拉伸
             gl_flag_deal.addWidget(cb, i // 2, i % 2, alignment=Qt.AlignTop)
-            
+
         # 【核心修复 3】：在网格的最下面（第 3 行，因为上面是 0, 1, 2 行）加一个垂直弹簧。
         # 这样当外层窗口缩放时，这个弹簧会吸收多余的形变，复选框就不会被挤压了。
         gl_flag_deal.setRowStretch(3, 1)
@@ -397,7 +428,7 @@ class SettingsDialog(QDialog):
         gl_flag_other = QGridLayout(g_flag_other)
         gl_flag_other.setHorizontalSpacing(6)
         gl_flag_other.setVerticalSpacing(6)
-        for i in range(14,15):
+        for i in range(14, 15):
             cb = QCheckBox(cb_texts[i])
             cb.setChecked(self.win.header_is_visible(cb_texts[i]))
             cb.stateChanged.connect(partial(self._on_cb_changed, cb_texts[i]))
@@ -409,13 +440,15 @@ class SettingsDialog(QDialog):
 
         # 3.2 简易模式指标复选框组
         g_simple_flags = QGroupBox("简易模式指标")
-        g_simple_flags.setContentsMargins(3,12,3,6)
+        g_simple_flags.setContentsMargins(3, 12, 3, 6)
         gl_simple = QGridLayout(g_simple_flags)
         gl_simple.setHorizontalSpacing(6)
         gl_simple.setVerticalSpacing(6)
         self.simple_cbs: list[QCheckBox] = []
-        simple_headers = ["代码", "名称", "现价", "涨跌值", "涨跌幅", "盈亏", "买一/卖一", "委比", "成交量", "成交额", "均价", "日高", "日低", "K线"]
-        simple_header_keys = ["代码", "名称", "现价", "涨跌值", "涨跌幅", "盈亏", "买一", "委比", "成交量", "成交额", "均价", "日高", "日低", "K线"]
+        simple_headers = ["代码", "名称", "现价", "涨跌值", "涨跌幅", "盈亏",
+                          "买一/卖一", "委比", "成交量", "成交额", "均价", "日高", "日低", "K线"]
+        simple_header_keys = ["代码", "名称", "现价", "涨跌值", "涨跌幅",
+                              "盈亏", "买一", "委比", "成交量", "成交额", "均价", "日高", "日低", "K线"]
         for i, (label, key) in enumerate(zip(simple_headers, simple_header_keys)):
             cb = QCheckBox(label)
             cb.setChecked(self.win.simple_header_is_visible(key))
@@ -429,7 +462,7 @@ class SettingsDialog(QDialog):
 
         # 符号设置
         g_symbols = QGroupBox("标记符号")
-        g_symbols.setContentsMargins(3,12,3,6)
+        g_symbols.setContentsMargins(3, 12, 3, 6)
         gl_sym = QGridLayout(g_symbols)
         gl_sym.setHorizontalSpacing(6)
         gl_sym.setVerticalSpacing(6)
@@ -474,7 +507,7 @@ class SettingsDialog(QDialog):
 
         # 表格外观
         g_table = QGroupBox("表格外观")
-        g_table.setContentsMargins(3,12,3,6)
+        g_table.setContentsMargins(3, 12, 3, 6)
         gl_table = QGridLayout(g_table)
         gl_table.setHorizontalSpacing(6)
         gl_table.setVerticalSpacing(6)
@@ -484,13 +517,13 @@ class SettingsDialog(QDialog):
         self.chk_table_grid = QCheckBox("显示网格")
         self.chk_table_grid.setChecked(self.win.grid_visible)
 
-        gl_table.addWidget(self.chk_table_header,0,0)
-        gl_table.addWidget(self.chk_table_grid,0,1)
+        gl_table.addWidget(self.chk_table_header, 0, 0)
+        gl_table.addWidget(self.chk_table_grid, 0, 1)
         appearance_settings.addWidget(g_table)
 
         # 3.颜色/透明度
         g_color = QGroupBox("颜色与透明度")
-        g_color.setContentsMargins(3,12,3,6)
+        g_color.setContentsMargins(3, 12, 3, 6)
         gl_color = QGridLayout(g_color)
         gl_color.setHorizontalSpacing(6)
         gl_color.setVerticalSpacing(6)
@@ -510,13 +543,15 @@ class SettingsDialog(QDialog):
         self.slider_grid_alpha = QSlider(Qt.Horizontal)
         self.slider_grid_alpha.setRange(0, 100)
         self.slider_grid_alpha.setMinimumWidth(150)
-        self.slider_grid_alpha.setValue(int(getattr(self.win, 'grid_alpha_pct', 31)))
+        self.slider_grid_alpha.setValue(
+            int(getattr(self.win, 'grid_alpha_pct', 31)))
         self.lbl_grid_alpha = QLabel(f"{self.slider_grid_alpha.value()}%")
         # 3.4 滑块：表头不透明度（表头文字）
         self.slider_header_alpha = QSlider(Qt.Horizontal)
         self.slider_header_alpha.setRange(0, 100)
         self.slider_header_alpha.setMinimumWidth(150)
-        self.slider_header_alpha.setValue(int(getattr(self.win, 'header_alpha_pct', 100)))
+        self.slider_header_alpha.setValue(
+            int(getattr(self.win, 'header_alpha_pct', 100)))
         self.lbl_header_alpha = QLabel(f"{self.slider_header_alpha.value()}%")
         # 3.5 滑块：背景不透明度
         self.slider_bg_alpha = QSlider(Qt.Horizontal)
@@ -528,31 +563,32 @@ class SettingsDialog(QDialog):
         self.slider_win_opacity = QSlider(Qt.Horizontal)
         self.slider_win_opacity.setRange(20, 100)
         self.slider_win_opacity.setMinimumWidth(150)
-        self.slider_win_opacity.setValue(int(round(self.win.windowOpacity()*100)))
+        self.slider_win_opacity.setValue(
+            int(round(self.win.windowOpacity()*100)))
         self.lbl_win_opacity = QLabel(f"{self.slider_win_opacity.value()}%")
 
-        gl_color.addWidget(self.btn_up_color,0,0,1,2)
-        gl_color.addWidget(self.btn_down_color,0,2,1,2)
-        gl_color.addWidget(self.btn_fg,0,4,1,2)
-        gl_color.addWidget(self.btn_bg,1,0,1,2)
-        gl_color.addWidget(self.btn_reset_colors,1,4,1,2)
-        gl_color.addWidget(QLabel("表格不透明度："),2,0,1,2)
-        gl_color.addWidget(self.slider_grid_alpha,2,2,1,3)
-        gl_color.addWidget(self.lbl_grid_alpha,2,5,1,1)
-        gl_color.addWidget(QLabel("表头不透明度："),3,0,1,2)
-        gl_color.addWidget(self.slider_header_alpha,3,2,1,3)
-        gl_color.addWidget(self.lbl_header_alpha,3,5,1,1)
-        gl_color.addWidget(QLabel("背景不透明度："),4,0,1,2)
-        gl_color.addWidget(self.slider_bg_alpha,4,2,1,3)
-        gl_color.addWidget(self.lbl_bg_alpha,4,5,1,1)
-        gl_color.addWidget(QLabel("整体不透明度："),5,0,1,2)
-        gl_color.addWidget(self.slider_win_opacity,5,2,1,3)
-        gl_color.addWidget(self.lbl_win_opacity,5,5,1,1)
+        gl_color.addWidget(self.btn_up_color, 0, 0, 1, 2)
+        gl_color.addWidget(self.btn_down_color, 0, 2, 1, 2)
+        gl_color.addWidget(self.btn_fg, 0, 4, 1, 2)
+        gl_color.addWidget(self.btn_bg, 1, 0, 1, 2)
+        gl_color.addWidget(self.btn_reset_colors, 1, 4, 1, 2)
+        gl_color.addWidget(QLabel("表格不透明度："), 2, 0, 1, 2)
+        gl_color.addWidget(self.slider_grid_alpha, 2, 2, 1, 3)
+        gl_color.addWidget(self.lbl_grid_alpha, 2, 5, 1, 1)
+        gl_color.addWidget(QLabel("表头不透明度："), 3, 0, 1, 2)
+        gl_color.addWidget(self.slider_header_alpha, 3, 2, 1, 3)
+        gl_color.addWidget(self.lbl_header_alpha, 3, 5, 1, 1)
+        gl_color.addWidget(QLabel("背景不透明度："), 4, 0, 1, 2)
+        gl_color.addWidget(self.slider_bg_alpha, 4, 2, 1, 3)
+        gl_color.addWidget(self.lbl_bg_alpha, 4, 5, 1, 1)
+        gl_color.addWidget(QLabel("整体不透明度："), 5, 0, 1, 2)
+        gl_color.addWidget(self.slider_win_opacity, 5, 2, 1, 3)
+        gl_color.addWidget(self.lbl_win_opacity, 5, 5, 1, 1)
         appearance_settings.addWidget(g_color)
 
         # 4.字体/行距
         g_font = QGroupBox("字体与行距")
-        g_font.setContentsMargins(3,12,3,6)
+        g_font.setContentsMargins(3, 12, 3, 6)
         gl_font = QGridLayout(g_font)
         gl_font.setHorizontalSpacing(6)
         gl_font.setVerticalSpacing(6)
@@ -573,17 +609,17 @@ class SettingsDialog(QDialog):
         self.slider_line = QSlider(Qt.Horizontal)
         self.slider_line.setRange(0, 20)
         self.slider_line.setMinimumWidth(150)
-        self.slider_line.setValue(getattr(self.win,"line_extra_px",4))
+        self.slider_line.setValue(getattr(self.win, "line_extra_px", 4))
         self.lbl_line = QLabel(f"+{self.slider_line.value()} px")
 
-        gl_font.addWidget(QLabel("字体："),0,0,1,2)
-        gl_font.addWidget(self.cmb_family,0,2,1,4)
-        gl_font.addWidget(QLabel("字号："),1,0,1,2)
-        gl_font.addWidget(self.slider_font,1,2,1,3)
-        gl_font.addWidget(self.lbl_font,1,5,1,1)
-        gl_font.addWidget(QLabel("行距："),2,0,1,2)
-        gl_font.addWidget(self.slider_line,2,2,1,3)
-        gl_font.addWidget(self.lbl_line,2,5,1,1)
+        gl_font.addWidget(QLabel("字体："), 0, 0, 1, 2)
+        gl_font.addWidget(self.cmb_family, 0, 2, 1, 4)
+        gl_font.addWidget(QLabel("字号："), 1, 0, 1, 2)
+        gl_font.addWidget(self.slider_font, 1, 2, 1, 3)
+        gl_font.addWidget(self.lbl_font, 1, 5, 1, 1)
+        gl_font.addWidget(QLabel("行距："), 2, 0, 1, 2)
+        gl_font.addWidget(self.slider_line, 2, 2, 1, 3)
+        gl_font.addWidget(self.lbl_line, 2, 5, 1, 1)
         appearance_settings.addWidget(g_font)
 
         self.tabs.addTab(tab_2, "外观")
@@ -594,14 +630,14 @@ class SettingsDialog(QDialog):
 
         # 4.热键
         g_hotkey = QGroupBox("快捷键")
-        g_hotkey.setContentsMargins(3,12,3,6)
+        g_hotkey.setContentsMargins(3, 12, 3, 6)
         gl_hotkey = QGridLayout(g_hotkey)
         gl_hotkey.setHorizontalSpacing(6)
         gl_hotkey.setVerticalSpacing(6)
-        gl_hotkey.addWidget(QLabel("隐藏/显示浮窗："),0,0,1,1)
+        gl_hotkey.addWidget(QLabel("隐藏/显示浮窗："), 0, 0, 1, 1)
         self.edit_hotkey = QKeySequenceEdit()
         self.edit_hotkey.setKeySequence(QKeySequence(self.win.hotkey))
-        gl_hotkey.addWidget(self.edit_hotkey,0,1)
+        gl_hotkey.addWidget(self.edit_hotkey, 0, 1)
         # 开机启动复选框
         self.chk_start_on_boot = QCheckBox("开机启动")
         self.chk_start_on_boot.setChecked(bool(self.win.start_on_boot))
@@ -611,7 +647,7 @@ class SettingsDialog(QDialog):
         # 窗口锚点
         from PySide6.QtWidgets import QRadioButton, QButtonGroup
         g_anchor = QGroupBox("窗口锚点")
-        g_anchor.setContentsMargins(3,12,3,6)
+        g_anchor.setContentsMargins(3, 12, 3, 6)
         gl_anchor = QHBoxLayout(g_anchor)
         self.rb_anchor_left = QRadioButton("左对齐")
         self.rb_anchor_right = QRadioButton("右对齐")
@@ -631,7 +667,7 @@ class SettingsDialog(QDialog):
 
         # 程序图标选择
         g_icon = QGroupBox("程序图标")
-        g_icon.setContentsMargins(3,12,3,6)
+        g_icon.setContentsMargins(3, 12, 3, 6)
         gl_icon = QHBoxLayout(g_icon)
         self.cmb_icon = QComboBox()
         icon_items = [
@@ -712,7 +748,7 @@ class SettingsDialog(QDialog):
         add_row.addWidget(self.cmb_pa_cooldown, 1, 1)
 
         self.btn_pa_add = QPushButton("添加规则")
-        self.btn_pa_add.setFixedWidth(70)
+        fit_button_width([self.btn_pa_add], min_width=70)
         add_row.addWidget(self.btn_pa_add, 1, 2, 1, 2)
         self.btn_pa_del = QPushButton("删除")
         self.btn_pa_del.setFixedWidth(50)
@@ -736,7 +772,8 @@ class SettingsDialog(QDialog):
 
         # 启用开关
         self.chk_nhl_alert = QCheckBox("启用新高新低报警")
-        self.chk_nhl_alert.setChecked(bool(self.win.new_high_low_alert_enabled))
+        self.chk_nhl_alert.setChecked(
+            bool(self.win.new_high_low_alert_enabled))
         gl_nhl.addWidget(self.chk_nhl_alert)
 
         # 新高/新低分别开关
@@ -797,7 +834,8 @@ class SettingsDialog(QDialog):
         self.chk_reach_limit_up.setChecked(bool(self.win.limit_alert_reach_up))
         la_chk_row1.addWidget(self.chk_reach_limit_up)
         self.chk_reach_limit_down = QCheckBox("到达跌停")
-        self.chk_reach_limit_down.setChecked(bool(self.win.limit_alert_reach_down))
+        self.chk_reach_limit_down.setChecked(
+            bool(self.win.limit_alert_reach_down))
         la_chk_row1.addWidget(self.chk_reach_limit_down)
         la_chk_row1.addStretch(1)
         gl_la.addLayout(la_chk_row1)
@@ -807,7 +845,8 @@ class SettingsDialog(QDialog):
         self.chk_leave_limit_up.setChecked(bool(self.win.limit_alert_leave_up))
         la_chk_row2.addWidget(self.chk_leave_limit_up)
         self.chk_leave_limit_down = QCheckBox("离开跌停")
-        self.chk_leave_limit_down.setChecked(bool(self.win.limit_alert_leave_down))
+        self.chk_leave_limit_down.setChecked(
+            bool(self.win.limit_alert_leave_down))
         la_chk_row2.addWidget(self.chk_leave_limit_down)
         la_chk_row2.addStretch(1)
         gl_la.addLayout(la_chk_row2)
@@ -822,7 +861,8 @@ class SettingsDialog(QDialog):
             if sec < 60:
                 self.cmb_limit_alert_cooldown.addItem(f"{sec}秒", userData=sec)
             else:
-                self.cmb_limit_alert_cooldown.addItem(f"{sec//60}分钟", userData=sec)
+                self.cmb_limit_alert_cooldown.addItem(
+                    f"{sec//60}分钟", userData=sec)
         # 设置当前值
         cur_la_cd = self.win.limit_alert_cooldown
         for i in range(self.cmb_limit_alert_cooldown.count()):
@@ -845,16 +885,17 @@ class SettingsDialog(QDialog):
 
         self.tabs.addTab(tab_4, "报警")
 
-        #第五页：使用说明
+        # 第五页：使用说明
         tab_help = QWidget()
         lay_help = QVBoxLayout(tab_help)
         lay_help.setContentsMargins(5, 5, 5, 5)
-        
+
         # 1. 创建滚动区域，防止4K或笔记本小屏幕下文字显示不全
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
-        
+        scroll_area.setStyleSheet(
+            "QScrollArea { border: none; background-color: transparent; }")
+
         # 2. 用富文本和美观的 HTML 表格来排版说明书
         help_html = """
         <div style="line-height: 1.6; font-size: 13px; color: #333333; padding: 10px;">
@@ -900,15 +941,15 @@ class SettingsDialog(QDialog):
             </div>
         </div>
         """
-        
+
         lbl_help = QLabel(help_html)
         lbl_help.setWordWrap(True)  # 激活自动换行
         lbl_help.setTextFormat(Qt.RichText)
-        
+
         # 3. 将标签放入滚动区域，再将滚动区域放入新 Tab
         scroll_area.setWidget(lbl_help)
         lay_help.addWidget(scroll_area)
-        
+
         # 4. 把这个说明页挂载到 Tab 栏
         self.tabs.addTab(tab_help, "使用说明")
 
@@ -921,12 +962,16 @@ class SettingsDialog(QDialog):
         self.btn_dn.clicked.connect(self._move_down)
         self.btn_cost.clicked.connect(self._open_cost_dialog_for_current)
         self.btn_alert.clicked.connect(self._open_alert_dialog_for_current)
-        self.list_codes.itemSelectionChanged.connect(self._on_list_selection_changed)
+        self.list_codes.itemSelectionChanged.connect(
+            self._on_list_selection_changed)
         self.list_codes.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.list_codes.customContextMenuRequested.connect(self._on_list_context_menu)
+        self.list_codes.customContextMenuRequested.connect(
+            self._on_list_context_menu)
         # 连接：其它设置
-        self.cmb_interval.currentIndexChanged.connect(self._on_interval_changed)
-        self.cmb_namelength.currentIndexChanged.connect(self._on_name_length_changed)
+        self.cmb_interval.currentIndexChanged.connect(
+            self._on_interval_changed)
+        self.cmb_namelength.currentIndexChanged.connect(
+            self._on_name_length_changed)
         self.btn_up_color.clicked.connect(self.pick_up_color)
         self.btn_down_color.clicked.connect(self.pick_down_color)
         self.btn_fg.clicked.connect(self.pick_fg)
@@ -963,7 +1008,8 @@ class SettingsDialog(QDialog):
         self.cmb_icon.currentIndexChanged.connect(self._on_icon_changed)
         self.btn_pick_icon.clicked.connect(self._pick_custom_icon)
         self.tabs.currentChanged.connect(self._apply_tab_size)
-        self.cmb_b1s1_display.currentIndexChanged.connect(self._on_b1s1_display_changed)
+        self.cmb_b1s1_display.currentIndexChanged.connect(
+            self._on_b1s1_display_changed)
         self.cb_short_code.stateChanged.connect(self._on_short_code_toggled)
         # 符号设置连接
         self.edit_sym_high.textChanged.connect(self._on_symbols_changed)
@@ -974,7 +1020,8 @@ class SettingsDialog(QDialog):
         self.edit_sym_fall.textChanged.connect(self._on_symbols_changed)
         # 双模式切换连接
         self.chk_dual_mode.toggled.connect(self._on_dual_mode_toggled)
-        self.cmb_leave_delay.currentIndexChanged.connect(self._on_leave_delay_changed)
+        self.cmb_leave_delay.currentIndexChanged.connect(
+            self._on_leave_delay_changed)
         # 锚点连接
         self.rb_anchor_left.toggled.connect(self._on_anchor_changed)
         self.rb_anchor_right.toggled.connect(self._on_anchor_changed)
@@ -986,14 +1033,54 @@ class SettingsDialog(QDialog):
         self.chk_nhl_alert.toggled.connect(self._on_nhl_alert_toggled)
         self.chk_new_high.toggled.connect(self._on_new_high_toggled)
         self.chk_new_low.toggled.connect(self._on_new_low_toggled)
-        self.cmb_nhl_cooldown.currentIndexChanged.connect(self._on_nhl_cooldown_changed)
+        self.cmb_nhl_cooldown.currentIndexChanged.connect(
+            self._on_nhl_cooldown_changed)
         # 涨跌停通知连接
         self.chk_limit_alert.toggled.connect(self._on_limit_alert_toggled)
-        self.chk_reach_limit_up.toggled.connect(self._on_reach_limit_up_toggled)
-        self.chk_reach_limit_down.toggled.connect(self._on_reach_limit_down_toggled)
-        self.chk_leave_limit_up.toggled.connect(self._on_leave_limit_up_toggled)
-        self.chk_leave_limit_down.toggled.connect(self._on_leave_limit_down_toggled)
-        self.cmb_limit_alert_cooldown.currentIndexChanged.connect(self._on_limit_alert_cooldown_changed)
+        self.chk_reach_limit_up.toggled.connect(
+            self._on_reach_limit_up_toggled)
+        self.chk_reach_limit_down.toggled.connect(
+            self._on_reach_limit_down_toggled)
+        self.chk_leave_limit_up.toggled.connect(
+            self._on_leave_limit_up_toggled)
+        self.chk_leave_limit_down.toggled.connect(
+            self._on_leave_limit_down_toggled)
+        self.cmb_limit_alert_cooldown.currentIndexChanged.connect(
+            self._on_limit_alert_cooldown_changed)
+
+        # 修正分组框顶部留白：显式设置过 contentsMargins 的 QGroupBox 会丢失样式
+        # 自动预留的标题高度，导致分组内首行控件与标题文字重叠（文字重影）。
+        # 部分分组（如“成交”）是在其布局上单独设置的，故两处一并补足。
+        for gb in self.findChildren(QGroupBox):
+            m = gb.contentsMargins()
+            if m.top() < GROUP_TITLE_TOP_MARGIN:
+                gb.setContentsMargins(
+                    m.left(), GROUP_TITLE_TOP_MARGIN, m.right(), m.bottom())
+            lay = gb.layout()
+            if lay is not None:
+                lm = lay.contentsMargins()
+                if lm.top() < GROUP_TITLE_TOP_MARGIN:
+                    lay.setContentsMargins(
+                        lm.left(), GROUP_TITLE_TOP_MARGIN, lm.right(), lm.bottom())
+
+        # 给每一页套上滚动区域：对话框按页签固定了尺寸（见 _apply_tab_size），
+        # 内容多于固定高度时布局会压缩分组，造成标题与内容重叠、内容被裁切。
+        # 包一层滚动区域后，内容可按自然高度排列，不够时滚动查看。
+        current = self.tabs.currentIndex()
+        for i in range(self.tabs.count()):
+            page = self.tabs.widget(i)
+            if isinstance(page, QScrollArea):
+                continue
+            title = self.tabs.tabText(i)
+            self.tabs.removeTab(i)
+            sa = QScrollArea()
+            sa.setWidgetResizable(True)
+            sa.setFrameShape(QFrame.NoFrame)
+            sa.setWidget(page)
+            self.tabs.insertTab(i, sa, title)
+        self.tabs.setCurrentIndex(current)
+        # 包上滚动区域后重新按实际内容定一次尺寸（_apply_tab_size 首次调用时页面还未创建）
+        self._apply_tab_size(self.tabs.currentIndex())
 
     def _on_start_on_boot_toggled(self, checked: bool):
         try:
@@ -1014,7 +1101,7 @@ class SettingsDialog(QDialog):
 
     def _normalize_code_or_none(self, s: str):
         original_s = (s or "").strip()
-        if not original_s: 
+        if not original_s:
             return None
 
         lower_s = original_s.lower()
@@ -1026,8 +1113,8 @@ class SettingsDialog(QDialog):
         # ==========================================
         if lower_s.startswith(('nf_', 'hf_', 'b_', 'gb_', 'fx_', 'rt_hk', 'hk')):
             if lower_s.startswith(('fx_', 'rt_hk', 'hk')):
-                return lower_s.replace('fx_s_', 'fx_s') # 兼容外汇旧错码
-                
+                return lower_s.replace('fx_s_', 'fx_s')  # 兼容外汇旧错码
+
             parts = original_s.split('_', 1)
             if len(parts) == 2:
                 prefix = parts[0].lower()
@@ -1057,22 +1144,25 @@ class SettingsDialog(QDialog):
         # 2. 全球其他指数大词典 (【修改】：移出了美股三大指数)
         INDEX_DICT = {
             # 亚洲
-            "NKY", "N225", "N255", "KS11", "KOSPI", "TWII", 
+            "NKY", "N225", "N255", "KS11", "KOSPI", "TWII",
             # 美洲 (巴西)
             "IBOV",
             # 欧洲
-            "UKX", "CAC", "DAX", "MICEX", "RTS", 
+            "UKX", "CAC", "DAX", "MICEX", "RTS",
             # 东南亚/印度/澳洲
-            "SENSEX", "NIFTY", "STI", "KLSE", "SETI", "AS51", "NZ50" 
+            "SENSEX", "NIFTY", "STI", "KLSE", "SETI", "AS51", "NZ50"
         }
         if test_s in INDEX_DICT:
-            if test_s in ["N225", "N255"]: test_s = "NKY"
-            elif test_s == "KOSPI": test_s = "KS11"
+            if test_s in ["N225", "N255"]:
+                test_s = "NKY"
+            elif test_s == "KOSPI":
+                test_s = "KS11"
             return f"b_{test_s}"
 
         # 3. 【新增】：美股三大指数特供通道 (走 gb_ 美股接口)
         if test_s in {"DJI", "IXIC", "INX", "SPX"}:
-            if test_s == "SPX": test_s = "INX" # 标普500 新浪只认 INX
+            if test_s == "SPX":
+                test_s = "INX"  # 标普500 新浪只认 INX
             return f"gb_{test_s.lower()}"
 
         # 4. 外盘期货/现货
@@ -1095,9 +1185,11 @@ class SettingsDialog(QDialog):
         # 兜底：原作者的 A 股 / ETF 识别逻辑
         # ==========================================
         s = lower_s
-        s = re.sub(r'[^a-z0-9]', '', s)  
-        if not s: return None
-        if getattr(self, '_re_full', None) and self._re_full.match(s): return s
+        s = re.sub(r'[^a-z0-9]', '', s)
+        if not s:
+            return None
+        if getattr(self, '_re_full', None) and self._re_full.match(s):
+            return s
         if getattr(self, '_re_6', None) and self._re_6.match(s):
             if s[0] == '6' or s[0:2] == '90' or s[0] == '5':
                 return 'sh' + s
@@ -1105,7 +1197,7 @@ class SettingsDialog(QDialog):
                 return 'sz' + s
             elif s[0] == '8' or s[0] == '4' or s[0:2] == '92':
                 return 'bj' + s
-                
+
         return None
 
     def _collect_codes_from_list(self):
@@ -1151,7 +1243,8 @@ class SettingsDialog(QDialog):
 
     def _add_code(self):
         it = QListWidgetItem("sh000001")
-        it.setFlags(it.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEditable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        it.setFlags(it.flags() | Qt.ItemIsUserCheckable |
+                    Qt.ItemIsEditable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         it.setCheckState(Qt.Unchecked)
         it.setData(Qt.UserRole, "sh000001")
         self.list_codes.addItem(it)
@@ -1197,7 +1290,8 @@ class SettingsDialog(QDialog):
         act.triggered.connect(lambda: self._open_cost_dialog_for_item(item))
         menu.addAction(act)
         act_alert = QAction("封单预警…", menu)
-        act_alert.triggered.connect(lambda: self._open_alert_dialog_for_item(item))
+        act_alert.triggered.connect(
+            lambda: self._open_alert_dialog_for_item(item))
         menu.addAction(act_alert)
         menu.exec(self.list_codes.viewport().mapToGlobal(pos))
 
@@ -1251,7 +1345,7 @@ class SettingsDialog(QDialog):
     # —— 其它槽 —— #
     def _on_interval_changed(self, idx):
         seconds = self.cmb_interval.currentData()
-        if isinstance(seconds,int): 
+        if isinstance(seconds, int):
             self.win.set_refresh_interval(seconds)
 
     def _on_reset_colors(self):
@@ -1272,7 +1366,7 @@ class SettingsDialog(QDialog):
             self.cb_short_code.setEnabled(state)
         elif header == "名称":
             self.cmb_namelength.setEnabled(state)
-    
+
     def _on_short_code_toggled(self, checked: bool):
         self.win.set_code_type(checked)
 
@@ -1323,62 +1417,90 @@ class SettingsDialog(QDialog):
         self.win.set_simple_flag(header, state)
 
     def _apply_tab_size(self, index: int):
-        target_size = self.tab_sizes.get(index, QSize(480, 400))
-        
+        target_size = QSize(self.tab_sizes.get(index, QSize(480, 400)))
+
+        # 页签固定尺寸若小于内容自然高度，布局会压缩分组导致显示不全。
+        # 这里按内容自然尺寸加高，仅在屏幕或上限不允许时才依赖滚动区域。
+        page = self.tabs.widget(index)
+        inner = page.widget() if isinstance(page, QScrollArea) else page
+        if inner is not None:
+            need_h = inner.sizeHint().height() + TAB_CHROME_H
+            need_w = inner.sizeHint().width() + TAB_CHROME_W
+            screen = QApplication.primaryScreen().availableGeometry()
+            limit_h = min(screen.height() - 60, TAB_MAX_H)
+            target_size.setWidth(int(max(target_size.width(), min(need_w, screen.width() - 60))))
+            target_size.setHeight(int(max(target_size.height(), min(need_h, limit_h))))
+
         # 1. 临时解除主窗口所有的尺寸锁定，为变形做准备
         self.setMinimumSize(0, 0)
-        self.setMaximumSize(16777215, 16777215) 
+        self.setMaximumSize(16777215, 16777215)
 
         # 2. 让后台页面“隐身”，彻底剥夺它们抢占空间的权利
         for i in range(self.tabs.count()):
             page = self.tabs.widget(i)
             if i == index:
-                page.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+                page.setSizePolicy(QSizePolicy.Preferred,
+                                   QSizePolicy.Preferred)
             else:
                 page.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        
+
         # 3. 强制 QTabWidget 忘记刚才那个巨大的高度，重新计算
         self.tabs.updateGeometry()
 
-        # 4. 强制一锤定音！直接锁死成你字典里写好的目标尺寸
+        # 4. 锁定成结合内容后的目标尺寸
         self.setFixedSize(target_size)
-        
+
         # 【重要提示】：千万不要再加 self.adjustSize() 了，到这里完美收工！
 
     def pick_fg(self):
         c = QColorDialog.getColor(self.win.fg, self, "选择表格颜色")
-        if c.isValid(): self.win.set_fg_color(c)
+        if c.isValid():
+            self.win.set_fg_color(c)
+
     def pick_up_color(self):
         c = QColorDialog.getColor(self.win.up_color, self, "选择涨颜色")
-        if c.isValid(): self.win.set_up_color(c)
+        if c.isValid():
+            self.win.set_up_color(c)
+
     def pick_down_color(self):
         c = QColorDialog.getColor(self.win.down_color, self, "选择跌颜色")
-        if c.isValid(): self.win.set_down_color(c)
+        if c.isValid():
+            self.win.set_down_color(c)
+
     def pick_bg(self):
         base = QColor(self.win.bg)
         base.setAlpha(255)
         c = QColorDialog.getColor(base, self, "选择背景颜色")
-        if c.isValid(): self.win.set_bg_rgb_keep_alpha(c)
-    def apply_bg_alpha(self, v): 
+        if c.isValid():
+            self.win.set_bg_rgb_keep_alpha(c)
+
+    def apply_bg_alpha(self, v):
         self.lbl_bg_alpha.setText(f"{v}%")
         self.win.set_bg_alpha_percent(v)
-    def apply_win_opacity(self, v): 
+
+    def apply_win_opacity(self, v):
         self.lbl_win_opacity.setText(f"{v}%")
         self.win.set_window_opacity_percent(v)
+
     def apply_grid_alpha(self, v):
         self.lbl_grid_alpha.setText(f"{v}%")
         self.win.set_grid_alpha_percent(v)
+
     def apply_header_alpha(self, v):
         self.lbl_header_alpha.setText(f"{v}%")
         self.win.set_header_alpha_percent(v)
-    def _on_family_changed(self, fam: str): 
+
+    def _on_family_changed(self, fam: str):
         self.win.set_font_family(fam)
+
     def apply_font_size(self, v):
         self.lbl_font.setText(f"{v} pt")
         self.win.set_font_size(v)  # 同步 K 线缩放
-    def _on_line_changed(self, v: int): 
+
+    def _on_line_changed(self, v: int):
         self.lbl_line.setText(f"+{v} px")
         self.win.set_line_extra(v)
+
     def _on_hotkey_changed(self):
         new_hotkey = self.edit_hotkey.keySequence().toString()
         try:
@@ -1406,7 +1528,8 @@ class SettingsDialog(QDialog):
 
     def _pick_custom_icon(self):
         try:
-            path, _ = QFileDialog.getOpenFileName(self, "选择图标文件", os.path.expanduser('~'), "图标文件 (*.ico);;All Files (*)")
+            path, _ = QFileDialog.getOpenFileName(
+                self, "选择图标文件", os.path.expanduser('~'), "图标文件 (*.ico);;All Files (*)")
             if path:
                 # append or find existing custom entry
                 idx = self.cmb_icon.findData(path)
@@ -1449,7 +1572,8 @@ class SettingsDialog(QDialog):
             cooldown = self.cmb_pa_cooldown.currentData()
             if not isinstance(period, int) or not isinstance(cooldown, int):
                 return
-            rule = {"period": period, "threshold": threshold, "cooldown": cooldown}
+            rule = {"period": period,
+                    "threshold": threshold, "cooldown": cooldown}
             self._add_pa_rule_item(rule)
             self.win.add_price_alert_rule(period, threshold, cooldown)
         except Exception:

@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['StockWidget.py'],
+    ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('StockWidget.ico', '.')],
+    datas=[('resources', 'resources')],
     hiddenimports=['keyboard'],
     hookspath=[],
     hooksconfig={},
@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['StockWidget.ico'],
+    icon=['resources/icons/StockWidget.ico'],
 )

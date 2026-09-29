@@ -5,12 +5,12 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "PySide6>=6.7.0",
-    "requests>=2.32.0",
+    "PySide6>=6.11",
+    "requests>=2.34",
     "keyboard>=0.13.5",
 ]
 
 [dependency-groups]
 build = [
-    "pyinstaller>=6.20.0",
+    "pyinstaller>=6.21",
 ]

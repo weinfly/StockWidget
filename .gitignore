@@ -1,3 +1,9 @@
 .build
+.qoder
+.git
 dict/
 __pycache__/
+resources/resources_rc.py
+SW_config.json
+build/
+dist/

@@ -1,4 +1,8 @@
-import requests, keyboard, time
+from PySide6.QtWidgets import QStyle
+from PySide6.QtWidgets import QStyledItemDelegate
+import requests
+import keyboard
+import time
 from collections import deque
 from functools import partial
 import webbrowser
@@ -7,11 +11,9 @@ from PySide6.QtCore import QPropertyAnimation, QRect, Qt, QEvent, QTimer, Signal
 from PySide6.QtGui import QEnterEvent, QFont, QAction, QColor, QGuiApplication, QPalette
 from PySide6.QtWidgets import QApplication, QWidget, QMenu, QVBoxLayout, QLabel, QTableView, QHeaderView, QAbstractItemView, QFrame, QStyledItemDelegate
 
-from Display import SimpleTableModel, KLineDelegate, DEFAULT_UP_COLOR, DEFAULT_DOWN_COLOR, DEFAULT_TABLE_COLOR
+from stockwidget.core.table_model import SimpleTableModel, KLineDelegate, DEFAULT_UP_COLOR, DEFAULT_DOWN_COLOR, DEFAULT_TABLE_COLOR
 MIN_FONT_SIZE = 6
 
-from PySide6.QtWidgets import QStyledItemDelegate
-from PySide6.QtWidgets import QStyle
 
 class NoSelectionDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
@@ -23,15 +25,17 @@ class NoSelectionDelegate(QStyledItemDelegate):
         # 2. 调用父类绘制
         super().paint(painter, option, index)
 
+
 class FloatLabel(QWidget):
     hotkey_triggered = Signal()
+
     def __init__(self, cfg: dict):
         super().__init__()
         self._on_change = (lambda: None)
         self._open_settings_cb = None
 
         # --- 贴边隐藏相关设置 ---
-        self.is_hidden_state = False # 记录当前是否处于隐藏状态
+        self.is_hidden_state = False  # 记录当前是否处于隐藏状态
         self.edge_margin = 10        # 距离边缘多少像素算“贴边”
         self.expose_width = 15        # 隐藏后露出的像素宽度（用来接收鼠标事件）
         self.hidden_pos = None       # 隐藏时的位置
@@ -42,70 +46,85 @@ class FloatLabel(QWidget):
         # 检查贴边的定时器
         self.edge_check_timer = QTimer(self)
         self.edge_check_timer.timeout.connect(self._check_edge_and_hide)
-        self.edge_check_timer.start(500) # 每 500 毫秒检查一次
+        self.edge_check_timer.start(500)  # 每 500 毫秒检查一次
 
         # 平滑移动动画
         self.anim = QPropertyAnimation(self, b"pos")
-        self.anim.setDuration(200) # 动画时长 200 毫秒
+        self.anim.setDuration(200)  # 动画时长 200 毫秒
 
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setWindowFlags(Qt.FramelessWindowHint |
+                            Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.StrongFocus)
 
         # 加载配置
-        codes_cfg               = cfg.get("codes",["sh000001"])             # 自选列表
-        checked_codes_cfg       = cfg.get("checked_codes", cfg.get("visible_codes", codes_cfg))  # 在浮窗中显示的股票（新名 checked_codes，兼容 visible_codes）
-        self.refresh_seconds    = int(cfg.get("refresh_seconds", 2))        # 刷新间隔
-        flags_cfg               = cfg.get("flags", {})                      # 指标开关（字典格式）
-        self.short_code         = bool(cfg.get("short_code", False))
-        self.name_length        = int(cfg.get("name_length",0))
+        codes_cfg = cfg.get("codes", ["sh000001"])             # 自选列表
+        # 在浮窗中显示的股票（新名 checked_codes，兼容 visible_codes）
+        checked_codes_cfg = cfg.get(
+            "checked_codes", cfg.get("visible_codes", codes_cfg))
+        self.refresh_seconds = int(cfg.get("refresh_seconds", 2))        # 刷新间隔
+        flags_cfg = cfg.get("flags", {})                      # 指标开关（字典格式）
+        self.short_code = bool(cfg.get("short_code", False))
+        self.name_length = int(cfg.get("name_length", 0))
         # b1s1_display: 'qty'|'price'|'both'。兼容旧配置键 b1s1_price (bool)
         b1s1_display_cfg = cfg.get("b1s1_display", None)
         if isinstance(b1s1_display_cfg, str) and b1s1_display_cfg in ("qty", "price", "both"):
             self.b1s1_display = b1s1_display_cfg
         else:
             # 旧配置兼容：若 b1s1_price 为 True 则默认显示价格，否则显示数量
-            self.b1s1_display = "price" if bool(cfg.get("b1s1_price", False)) else "qty"
-        
+            self.b1s1_display = "price" if bool(
+                cfg.get("b1s1_price", False)) else "qty"
+
         # 防止买一/卖一同步时触发重复处理
         self._syncing_b1s1 = False
 
-        self.header_visible     = bool(cfg.get("header_visible", False))    # 表头可见
-        self.grid_visible       = bool(cfg.get("grid_visible", False))      # 网格可见
+        self.header_visible = bool(cfg.get("header_visible", False))    # 表头可见
+        self.grid_visible = bool(cfg.get("grid_visible", False))      # 网格可见
 
-        font_family             = cfg.get("font_family", "Microsoft YaHei") # 字体类型
-        font_size               = int(cfg.get("font_size", 10))             # 字体大小
-        self.line_extra_px      = int(cfg.get("line_extra_px", 1))          # 行间距
-        self.fg                 = QColor(cfg.get("fg", DEFAULT_TABLE_COLOR.name(QColor.HexRgb)))   # 表格颜色（中性/表头/网格）
-        self.up_color           = QColor(cfg.get("up_color", DEFAULT_UP_COLOR.name(QColor.HexRgb)))   # 涨颜色
-        self.down_color         = QColor(cfg.get("down_color", DEFAULT_DOWN_COLOR.name(QColor.HexRgb))) # 跌颜色
-        self.grid_alpha_pct     = max(0, min(100, int(cfg.get("grid_alpha_pct", 31))))  # 表格线/边框不透明度(%)
-        self.header_alpha_pct   = max(0, min(100, int(cfg.get("header_alpha_pct", 100))))# 表头文字不透明度(%)
-        bg                      = cfg.get("bg", {"r":0,"g":0,"b":0,"a":191})# 背景色
-        self.opacity_pct        = int(cfg.get("opacity_pct", 90))           # 透明度
+        font_family = cfg.get("font_family", "Microsoft YaHei")  # 字体类型
+        font_size = int(cfg.get("font_size", 10))             # 字体大小
+        self.line_extra_px = int(cfg.get("line_extra_px", 1))          # 行间距
+        # 表格颜色（中性/表头/网格）
+        self.fg = QColor(
+            cfg.get("fg", DEFAULT_TABLE_COLOR.name(QColor.HexRgb)))
+        self.up_color = QColor(
+            cfg.get("up_color", DEFAULT_UP_COLOR.name(QColor.HexRgb)))   # 涨颜色
+        self.down_color = QColor(
+            cfg.get("down_color", DEFAULT_DOWN_COLOR.name(QColor.HexRgb)))  # 跌颜色
+        self.grid_alpha_pct = max(
+            0, min(100, int(cfg.get("grid_alpha_pct", 31))))  # 表格线/边框不透明度(%)
+        self.header_alpha_pct = max(
+            0, min(100, int(cfg.get("header_alpha_pct", 100))))  # 表头文字不透明度(%)
+        bg = cfg.get("bg", {"r": 0, "g": 0, "b": 0, "a": 191})  # 背景色
+        self.opacity_pct = int(cfg.get("opacity_pct", 90))           # 透明度
 
-        self.hotkey             = cfg.get("hotkey", "Ctrl+Alt+F")           # 快捷键
-        self.start_on_boot      = bool(cfg.get("start_on_boot", False))
+        self.hotkey = cfg.get("hotkey", "Ctrl+Alt+F")           # 快捷键
+        self.start_on_boot = bool(cfg.get("start_on_boot", False))
 
         # 锚点：'left' 或 'right'，决定窗口宽度变化时保持哪一边对齐
         anchor_cfg = cfg.get("anchor", "left")
         self.anchor = anchor_cfg if anchor_cfg in ("left", "right") else "left"
 
         # 双模式切换
-        self.dual_mode_enabled = bool(cfg.get("dual_mode_enabled", False))  # 是否启用双模式切换
-        self.leave_delay_ms = int(cfg.get("leave_delay_ms", 500))           # 鼠标离开后切换简易模式的延迟(ms)
+        self.dual_mode_enabled = bool(
+            cfg.get("dual_mode_enabled", False))  # 是否启用双模式切换
+        # 鼠标离开后切换简易模式的延迟(ms)
+        self.leave_delay_ms = int(cfg.get("leave_delay_ms", 500))
         self._is_hovered = False  # 鼠标是否悬浮在浮窗上
         # 手动模式：当双模式自动切换关闭时生效，可选 "normal"/"simple"
         manual_mode_cfg = str(cfg.get("manual_mode", "normal")).lower()
-        self.manual_mode = manual_mode_cfg if manual_mode_cfg in ("normal", "simple") else "normal"
+        self.manual_mode = manual_mode_cfg if manual_mode_cfg in (
+            "normal", "simple") else "normal"
 
         # 符号设置：日高/日低、涨停/跌停、涨/跌
-        self.sym_high       = cfg.get("sym_high", "↑")         # 日高符号
-        self.sym_low        = cfg.get("sym_low", "↓")          # 日低符号
-        self.sym_limit_up   = cfg.get("sym_limit_up", "⇧")     # 涨停符号
+        self.sym_high = cfg.get("sym_high", "↑")         # 日高符号
+        self.sym_low = cfg.get("sym_low", "↓")          # 日低符号
+        self.sym_limit_up = cfg.get("sym_limit_up", "⇧")     # 涨停符号
         self.sym_limit_down = cfg.get("sym_limit_down", "⇩")   # 跌停符号
-        self.sym_rise       = cfg.get("sym_rise", "+")          # 涨符号（用于涨跌值/涨跌幅/盈亏/委比）
-        self.sym_fall       = cfg.get("sym_fall", "-")          # 跌符号（用于涨跌值/涨跌幅/盈亏/委比）
+        # 涨符号（用于涨跌值/涨跌幅/盈亏/委比）
+        self.sym_rise = cfg.get("sym_rise", "+")
+        # 跌符号（用于涨跌值/涨跌幅/盈亏/委比）
+        self.sym_fall = cfg.get("sym_fall", "-")
 
         # 持仓成本数据：{code: {"cost": float, "qty": int}}
         cost_cfg = cfg.get("cost_data", {}) or {}
@@ -118,7 +137,8 @@ class FloatLabel(QWidget):
                     cost = float(v.get("cost", 0))
                     qty = int(v.get("qty", 0))
                     if cost > 0 and qty != 0:
-                        self.cost_data[str(k).strip().lower()] = {"cost": cost, "qty": qty}
+                        self.cost_data[str(k).strip().lower()] = {
+                            "cost": cost, "qty": qty}
                 except Exception:
                     pass
 
@@ -127,7 +147,8 @@ class FloatLabel(QWidget):
         self.alert_data = {}
         self._alert_state = {}  # 运行时生效状态，与 thresholds 索引一一对应
         self._notify_alert = None  # 通知回调 fn(title, msg)
-        self._pnl_callback = None  # 总盈亏更新回调 fn(total_pnl: float, has_pnl: bool)
+        # 总盈亏更新回调 fn(total_pnl: float, has_pnl: bool)
+        self._pnl_callback = None
         self._tooltip_callback = None  # 托盘 ToolTip 文本更新回调 fn(text: str)
         if isinstance(alert_cfg, dict):
             for k, v in alert_cfg.items():
@@ -151,7 +172,8 @@ class FloatLabel(QWidget):
 
         # 涨跌异动报警配置
         price_alert_cfg = cfg.get("price_alert", {}) or {}
-        self.price_alert_enabled = bool(price_alert_cfg.get("enabled", False))  # 全局开关
+        self.price_alert_enabled = bool(
+            price_alert_cfg.get("enabled", False))  # 全局开关
         # 多规则列表：[{"period": int, "threshold": float, "cooldown": int}, ...]
         rules_cfg = price_alert_cfg.get("rules", None)
         if isinstance(rules_cfg, list) and rules_cfg:
@@ -182,7 +204,8 @@ class FloatLabel(QWidget):
         self.new_high_low_alert_enabled = bool(nhl_cfg.get("enabled", False))
         self.new_high_alert = bool(nhl_cfg.get("new_high", True))  # 新高报警开关
         self.new_low_alert = bool(nhl_cfg.get("new_low", True))   # 新低报警开关
-        self.new_high_low_cooldown = max(1, int(nhl_cfg.get("cooldown", 60)))  # 冷却秒数
+        self.new_high_low_cooldown = max(
+            1, int(nhl_cfg.get("cooldown", 60)))  # 冷却秒数
         # 状态追踪：{code: {"high": last_known_high, "low": last_known_low}}
         self._nhl_last_known = {}
         # 冷却记录：{(code, "high"/"low"): last_fire_timestamp}
@@ -190,12 +213,18 @@ class FloatLabel(QWidget):
 
         # 涨跌停通知配置
         limit_alert_cfg = cfg.get("limit_alert", {}) or {}
-        self.limit_alert_enabled = bool(limit_alert_cfg.get("enabled", False))  # 全局开关
-        self.limit_alert_reach_up = bool(limit_alert_cfg.get("reach_up", True))  # 到达涨停通知
-        self.limit_alert_reach_down = bool(limit_alert_cfg.get("reach_down", True))  # 到达跌停通知
-        self.limit_alert_leave_up = bool(limit_alert_cfg.get("leave_up", True))  # 离开涨停通知
-        self.limit_alert_leave_down = bool(limit_alert_cfg.get("leave_down", True))  # 离开跌停通知
-        self.limit_alert_cooldown = max(1, int(limit_alert_cfg.get("cooldown", 30)))  # 冷却秒数
+        self.limit_alert_enabled = bool(
+            limit_alert_cfg.get("enabled", False))  # 全局开关
+        self.limit_alert_reach_up = bool(
+            limit_alert_cfg.get("reach_up", True))  # 到达涨停通知
+        self.limit_alert_reach_down = bool(
+            limit_alert_cfg.get("reach_down", True))  # 到达跌停通知
+        self.limit_alert_leave_up = bool(
+            limit_alert_cfg.get("leave_up", True))  # 离开涨停通知
+        self.limit_alert_leave_down = bool(
+            limit_alert_cfg.get("leave_down", True))  # 离开跌停通知
+        self.limit_alert_cooldown = max(
+            1, int(limit_alert_cfg.get("cooldown", 30)))  # 冷却秒数
         # 状态追踪：{code: {"is_limit_up": bool, "is_limit_down": bool}}
         self._limit_alert_state = {}
         # 冷却记录：{(code, "reach_up"/"reach_down"/"leave_up"/"leave_down"): last_fire_timestamp}
@@ -204,33 +233,48 @@ class FloatLabel(QWidget):
         # 设置初值
         self.codes = [str(c).strip() for c in codes_cfg if str(c).strip()]
         # 列标题列表（提前定义，供后续旧配置解析使用）
-        self.ALL_HEADERS = ["代码", "名称", "现价", "涨跌值", "涨跌幅", "盈亏", "买一", "卖一", "委比", "成交量", "成交额", "均价", "日高", "日低", "K线"]
+        self.ALL_HEADERS = ["代码", "名称", "现价", "涨跌值", "涨跌幅", "盈亏",
+                            "买一", "卖一", "委比", "成交量", "成交额", "均价", "日高", "日低", "K线"]
 
         # 列显示标志（独立属性）
         # 解析旧 flags 配置以做回退
         old_flags = {}
         if isinstance(flags_cfg, list):
             for i, h in enumerate(self.ALL_HEADERS):
-                old_flags[h] = bool(flags_cfg[i]) if i < len(flags_cfg) else False
+                old_flags[h] = bool(flags_cfg[i]) if i < len(
+                    flags_cfg) else False
         elif isinstance(flags_cfg, dict):
             for h in self.ALL_HEADERS:
                 old_flags[h] = bool(flags_cfg.get(h, False))
 
         # 新：为每一列创建独立的 bool 属性（优先读取新配置，否则回退到 old_flags）
-        self.code_visible = bool(cfg.get("code_visible", old_flags.get("代码", False)))
-        self.name_visible = bool(cfg.get("name_visible", old_flags.get("名称", False)))
-        self.price_visible = bool(cfg.get("price_visible", old_flags.get("现价", False)))
-        self.change_visible = bool(cfg.get("change_visible", old_flags.get("涨跌值", False)))
-        self.change_pct_visible = bool(cfg.get("change_pct_visible", old_flags.get("涨跌幅", False)))
+        self.code_visible = bool(
+            cfg.get("code_visible", old_flags.get("代码", False)))
+        self.name_visible = bool(
+            cfg.get("name_visible", old_flags.get("名称", False)))
+        self.price_visible = bool(
+            cfg.get("price_visible", old_flags.get("现价", False)))
+        self.change_visible = bool(
+            cfg.get("change_visible", old_flags.get("涨跌值", False)))
+        self.change_pct_visible = bool(
+            cfg.get("change_pct_visible", old_flags.get("涨跌幅", False)))
         # 买一/卖一 使用单一开关 b1s1_visible（用户要求不要拆分控制）
-        self.b1s1_visible = bool(cfg.get("b1s1_visible", (old_flags.get("买一", False) or old_flags.get("卖一", False))))
-        self.commi_visible = bool(cfg.get("commi_visible", old_flags.get("委比", False)))
-        self.vol_visible = bool(cfg.get("vol_visible", old_flags.get("成交量", False)))
-        self.amount_visible = bool(cfg.get("amount_visible", old_flags.get("成交额", False)))
-        self.avg_visible = bool(cfg.get("avg_visible", old_flags.get("均价", False)))
-        self.high_visible = bool(cfg.get("high_visible", old_flags.get("日高", False)))
-        self.low_visible = bool(cfg.get("low_visible", old_flags.get("日低", False)))
-        self.kline_visible = bool(cfg.get("kline_visible", old_flags.get("K线", False)))
+        self.b1s1_visible = bool(cfg.get(
+            "b1s1_visible", (old_flags.get("买一", False) or old_flags.get("卖一", False))))
+        self.commi_visible = bool(
+            cfg.get("commi_visible", old_flags.get("委比", False)))
+        self.vol_visible = bool(
+            cfg.get("vol_visible", old_flags.get("成交量", False)))
+        self.amount_visible = bool(
+            cfg.get("amount_visible", old_flags.get("成交额", False)))
+        self.avg_visible = bool(
+            cfg.get("avg_visible", old_flags.get("均价", False)))
+        self.high_visible = bool(
+            cfg.get("high_visible", old_flags.get("日高", False)))
+        self.low_visible = bool(
+            cfg.get("low_visible", old_flags.get("日低", False)))
+        self.kline_visible = bool(
+            cfg.get("kline_visible", old_flags.get("K线", False)))
         self.pnl_visible = bool(cfg.get("pnl_visible", False))
 
         # 简易模式列显示标志
@@ -252,11 +296,11 @@ class FloatLabel(QWidget):
 
         # 设置自选显示股票（新名 checked_codes）
         self.codes = [str(c).strip() for c in codes_cfg if str(c).strip()]
-        self.checked_codes = [str(c).strip() for c in checked_codes_cfg if (str(c).strip() and str(c).strip() in self.codes)]
+        self.checked_codes = [str(c).strip() for c in checked_codes_cfg if (
+            str(c).strip() and str(c).strip() in self.codes)]
         self.font = QFont(font_family, max(8, min(15, font_size)))
-        self.bg = QColor(bg["r"],bg["g"],bg["b"],bg["a"])
-        
-        
+        self.bg = QColor(bg["r"], bg["g"], bg["b"], bg["a"])
+
         self.hotkey_triggered.connect(self.toggle_win)
         self._register_hotkey()
 
@@ -264,7 +308,7 @@ class FloatLabel(QWidget):
         self.panel = QWidget(self)
         self.panel.setObjectName("panel")
         self.vbox = QVBoxLayout(self.panel)
-        self.vbox.setContentsMargins(10,6,10,6)
+        self.vbox.setContentsMargins(10, 6, 10, 6)
         self.vbox.setSpacing(0)
 
         self.table = QTableView(self.panel)
@@ -273,9 +317,11 @@ class FloatLabel(QWidget):
         # 1. 修改原有设置，允许接收鼠标点击
         self.table.setFocusPolicy(Qt.ClickFocus)
         # 2. 把 NoSelection 改为 SingleSelection (允许选中，否则 clicked 信号很难触发)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection)
         # 3. 还有一个隐藏设置：确保点击时选中整行，而不是零散的单元格
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setVisible(self.header_visible)
         self.table.horizontalHeader().setStretchLastSection(False)
@@ -284,7 +330,8 @@ class FloatLabel(QWidget):
         self.table.horizontalHeader().setFont(self.font)
         self.table.verticalHeader().setMinimumSectionSize(1)
         self.table.verticalHeader().setDefaultSectionSize(1)
-        self.table.horizontalHeader().setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.table.horizontalHeader().setAttribute(
+            Qt.WA_TransparentForMouseEvents, True)
         self.table.setTextElideMode(Qt.ElideNone)
         self.table.setItemDelegate(NoSelectionDelegate())
 
@@ -295,8 +342,9 @@ class FloatLabel(QWidget):
         palette.setColor(QPalette.Highlight, QColor(0, 0, 0, 0))
 
         # 将“选中状态的字体颜色”设置为与普通文字颜色一致 (防止反色)
-        palette.setColor(QPalette.HighlightedText, palette.color(QPalette.Text))
-        
+        palette.setColor(QPalette.HighlightedText,
+                         palette.color(QPalette.Text))
+
         # 应用这个新的调色板
         self.table.setPalette(palette)
         # 3. 连接信号
@@ -306,7 +354,8 @@ class FloatLabel(QWidget):
         self.error_label.setVisible(False)
         self.vbox.addWidget(self.error_label)
 
-        self.model = SimpleTableModel(headers=self.ALL_HEADERS, align_right_cols=[1,2,3,4,5])
+        self.model = SimpleTableModel(
+            headers=self.ALL_HEADERS, align_right_cols=[1, 2, 3, 4, 5])
         self.model.set_color_scheme(self.fg, self.up_color, self.down_color)
         self.table.setModel(self.model)
 
@@ -336,7 +385,8 @@ class FloatLabel(QWidget):
             self.move(x, y)
             self._pending_pos = (x, y)
         else:
-            self.move(scr.right()-self.width()-40, scr.bottom()-self.height()-80)
+            self.move(scr.right()-self.width()-40,
+                      scr.bottom()-self.height()-80)
 
         self._drag_pos = None
 
@@ -369,7 +419,6 @@ class FloatLabel(QWidget):
             url = self._get_xueqiu_url(code)
             print(url)
             webbrowser.open(url)
-        
 
     def _get_sina_url(self, code):
         # 1. A 股股票 (sh/sz) -> 标准行情页
@@ -378,9 +427,9 @@ class FloatLabel(QWidget):
 
         # 2. 基金/ETF/LOF (sh5, sz15, sz16) -> 基金详情页
         if code.startswith(('sh5', 'sz15', 'sz16')):
-            pure_code = code[2:] 
+            pure_code = code[2:]
             return f"https://finance.sina.com.cn/fund/quotes/{pure_code}/bc.shtml"
-        
+
         # 3. 外汇 (fx_) -> 货币详情页
         if code.startswith('fx_'):
             fx_code = code.replace('fx_s', '').replace('fx_', '').upper()
@@ -398,9 +447,10 @@ class FloatLabel(QWidget):
             return f"https://finance.sina.com.cn/stock/globalindex/quotes/{idx_code}"
 
         # 6. 兜底逻辑：所有未匹配品种 -> 调用官方搜索页
-        search_code = code.replace('b_', '').replace('hf_', '').replace('nf_', '').replace('fx_', '')
+        search_code = code.replace('b_', '').replace(
+            'hf_', '').replace('nf_', '').replace('fx_', '')
         return f"https://search.sina.com.cn/?q={search_code}"
-    
+
     def _get_xueqiu_url(self, code):
         """
         将各类资产代码转换为雪球 URL
@@ -409,25 +459,25 @@ class FloatLabel(QWidget):
         # 雪球规则：直接拼 SH/SZ + 代码，大写即可 (如 SH600519)
         if code.startswith(('sh', 'sz', 'bj')):
             return f"https://xueqiu.com/S/{code.upper()}"
-        
+
         # 2. 港股 (rt_hk 开头)
         # 雪球规则：HK + 代码 (如 HK00700)
         if code.startswith('rt_hk'):
             hk_code = code.replace('rt_hk', '').upper()
             return f"https://xueqiu.com/S/{hk_code}"
-        
+
         # 3. 美股 (gb_ 开头)
         # 雪球规则：直接用代码 (如 AAPL)
         if code.startswith('gb_'):
             us_code = code.replace('gb_', '').upper()
             return f"https://xueqiu.com/S/{us_code}"
-        
+
         # 4. 全球指数 (b_ 开头) 新浪接口
         if code.startswith('b_'):
             # 移除 b_ 前缀并转大写，例如 b_kospi -> KOSPI, b_nky -> NKY
             idx_code = code.replace('b_', '').upper()
             return f"https://finance.sina.com.cn/stock/globalindex/quotes/{idx_code}"
-        
+
        # 3. 外汇 (fx_) -> 新浪接口
         if code.startswith('fx_'):
             fx_code = code.replace('fx_s', '').replace('fx_', '').upper()
@@ -443,40 +493,44 @@ class FloatLabel(QWidget):
             screen = self.screen().availableGeometry()
         except Exception:
             screen = QApplication.primaryScreen().availableGeometry()
-            
+
         curr_rect = self.geometry()
-        
+
         # 1. 拦截条件
         if getattr(self, 'is_hidden_state', False):
             return
         if getattr(self, 'is_dragging', False) or not self.isVisible() or self.underMouse():
             return
-            
+
         self.hide_direction = None
-        
+
         # 2. 判断贴向哪边，并【强制计算】完美贴边坐标
         if curr_rect.top() <= screen.top() + self.edge_margin:
             self.hide_direction = 'top'
             # 弹出时：顶端紧贴屏幕顶端
             self.normal_pos = QPoint(curr_rect.left(), screen.top())
-            self.hidden_pos = QPoint(curr_rect.left(), screen.top() - curr_rect.height() + self.expose_width)
-            
+            self.hidden_pos = QPoint(
+                curr_rect.left(), screen.top() - curr_rect.height() + self.expose_width)
+
         elif curr_rect.left() <= screen.left() + self.edge_margin:
             self.hide_direction = 'left'
             # 弹出时：左端紧贴屏幕左端
             self.normal_pos = QPoint(screen.left(), curr_rect.top())
-            self.hidden_pos = QPoint(screen.left() - curr_rect.width() + self.expose_width, curr_rect.top())
-            
+            self.hidden_pos = QPoint(
+                screen.left() - curr_rect.width() + self.expose_width, curr_rect.top())
+
         elif curr_rect.right() >= screen.right() - self.edge_margin:
             self.hide_direction = 'right'
             # 弹出时：右端紧贴屏幕右端（计算公式：屏幕右边缘 X坐标 - 窗口自身宽度）
-            self.normal_pos = QPoint(screen.right() - curr_rect.width() + 1, curr_rect.top())
-            self.hidden_pos = QPoint(screen.right() - self.expose_width, curr_rect.top())
+            self.normal_pos = QPoint(
+                screen.right() - curr_rect.width() + 1, curr_rect.top())
+            self.hidden_pos = QPoint(
+                screen.right() - self.expose_width, curr_rect.top())
 
         # 3. 执行隐藏动画
         if self.hide_direction:
             self.is_hidden_state = True
-            self.anim.stop() 
+            self.anim.stop()
             # 注意这里：用当前的实际位置作为起点，向隐藏位置移动
             self.anim.setStartValue(self.pos())
             self.anim.setEndValue(self.hidden_pos)
@@ -485,13 +539,13 @@ class FloatLabel(QWidget):
     def enterEvent(self, event):
         """鼠标进入窗口：统一处理【贴边弹出】和【双模式切换】"""
         super().enterEvent(event)
-        
+
         # ===============================
         # 1. 贴边弹出逻辑
         # ===============================
         if hasattr(self, 'edge_check_timer'):
-            self.edge_check_timer.stop() # 停止检查贴边，防止乱跳
-            
+            self.edge_check_timer.stop()  # 停止检查贴边，防止乱跳
+
         if getattr(self, 'is_hidden_state', False) and getattr(self, 'normal_pos', None):
             self.anim.stop()
             # 注意：因为动画是 b"pos"，这里必须传当前坐标 (self.pos()) 和目标坐标
@@ -519,7 +573,7 @@ class FloatLabel(QWidget):
         # 1. 贴边隐藏逻辑
         # ===============================
         if hasattr(self, 'edge_check_timer'):
-            self.edge_check_timer.start(500) 
+            self.edge_check_timer.start(500)
             # 稍微延迟一下检查，给双模式一点反应时间
             QTimer.singleShot(100, self._check_edge_and_hide)
 
@@ -566,15 +620,16 @@ class FloatLabel(QWidget):
             pass
 
     # 与 App 连接
-    def set_open_settings_callback(self, fn): 
+    def set_open_settings_callback(self, fn):
         self._open_settings_cb = fn
 
-    def set_on_change(self, fn): 
+    def set_on_change(self, fn):
         self._on_change = fn or (lambda: None)
 
     def _notify_change(self):
         cb = getattr(self, "_on_change", None)
-        if callable(cb): cb()
+        if callable(cb):
+            cb()
 
     def current_config(self):
         return {
@@ -754,7 +809,7 @@ class FloatLabel(QWidget):
 
     # ----- 外观/尺寸 -----
     def apply_style(self):
-        r,g,b,a = self.bg.red(), self.bg.green(), self.bg.blue(), self.bg.alpha()
+        r, g, b, a = self.bg.red(), self.bg.green(), self.bg.blue(), self.bg.alpha()
         fg_r, fg_g, fg_b = self.fg.red(), self.fg.green(), self.fg.blue()
         g_alpha = int(round(self.grid_alpha_pct * 2.55))
         h_alpha = int(round(self.header_alpha_pct * 2.55))
@@ -812,13 +867,14 @@ class FloatLabel(QWidget):
         cols = self.model.columnCount()
         rows = self.model.rowCount()
         total_w = self.table.verticalHeader().width() + 2*self.table.frameWidth()
-        for c in range(cols): 
+        for c in range(cols):
             total_w += self.table.columnWidth(c)
-        hh = self.table.horizontalHeader().height() if self.table.horizontalHeader().isVisible() else 0
+        hh = self.table.horizontalHeader().height(
+        ) if self.table.horizontalHeader().isVisible() else 0
         total_h = hh + 2*self.table.frameWidth()
-        for r in range(rows): 
+        for r in range(rows):
             total_h += self.table.rowHeight(r)
-        self.table.setFixedSize(max(1,total_w), max(1,total_h))
+        self.table.setFixedSize(max(1, total_w), max(1, total_h))
         self.panel.adjustSize()
         self.resize(self.panel.size())
 
@@ -831,7 +887,8 @@ class FloatLabel(QWidget):
             new_x = old_right - self.width()
             try:
                 # 使用窗口当前所在屏幕的可用区域，避免多屏幕下被拽回主屏
-                ref_point = QPoint(new_x + self.width() // 2, self.y() + self.height() // 2)
+                ref_point = QPoint(new_x + self.width() // 2,
+                                   self.y() + self.height() // 2)
                 scr = self._screen_geometry_for(ref_point)
                 new_x = max(scr.left(), min(new_x, scr.right() - self.width()))
             except Exception:
@@ -846,7 +903,8 @@ class FloatLabel(QWidget):
     def _show_error(self, msg: str):
         try:
             if self.k_column_visible_index is not None:
-                self.table.setItemDelegateForColumn(self.k_column_visible_index, QStyledItemDelegate(self.table))
+                self.table.setItemDelegateForColumn(
+                    self.k_column_visible_index, QStyledItemDelegate(self.table))
                 self.k_column_visible_index = None
         except Exception:
             pass
@@ -879,11 +937,11 @@ class FloatLabel(QWidget):
         智能识别股票/期货/指数代码并补全前缀
         """
         raw_code = str(raw_code).strip()
-        
+
         # 1. 如果用户已经自带了前缀（比如已经输入了 hf_XAU, sh600519），直接放行
         if "_" in raw_code or raw_code.startswith(("sh", "sz", "bj")):
             return raw_code
-            
+
         # 2. 纯数字：国内 A股 / ETF / 转债 自动识别
         if raw_code.isdigit() and len(raw_code) == 6:
             if raw_code.startswith(("6", "5")):
@@ -892,44 +950,45 @@ class FloatLabel(QWidget):
                 return f"sz{raw_code}"  # 深市股票(0,3)或ETF(1)
             elif raw_code.startswith(("4", "8")):
                 return f"bj{raw_code}"  # 北交所
-                
+
         # 3. 常见外盘现货 / 期货 (转化为 hf_ 大写)
         hf_list = ["XAU", "XAG", "OIL", "CL", "GC", "SI"]
         if raw_code.upper() in hf_list:
             return f"hf_{raw_code.upper()}"
-            
+
         # 4. 常见全球指数 (转化为 b_ 大写)
         b_list = ["NKY", "DJI", "IXIC", "SPX", "HSI"]
         if raw_code.upper() in b_list:
             return f"b_{raw_code.upper()}"
-            
+
         # 5. 如果是纯英文字母（且不在上面列表里），默认当成美股 (转化为 gb_ 小写)
         if raw_code.isalpha():
             return f"gb_{raw_code.lower()}"
-            
+
         # 兜底返回原样
         return raw_code
 
     # ----- 数据来源：新浪财经 -----
-    def _get_price(self, codes:list):
+    def _get_price(self, codes: list):
         formatted_codes = []
         for c in codes:
             c_str = self.smart_format_code(c)
-            if not c_str: 
+            if not c_str:
                 continue
-                
+
             # 兼容处理：遇到 nf_ (国内期货), hf_ (外盘), b_ (全球指数)，保证前缀小写，后缀大写
             if c_str.lower().startswith(('nf_', 'hf_', 'b_')):
                 # 用 '_' 分割更安全，不用管前缀是 2 位还是 3 位
                 parts = c_str.split('_', 1)
                 if len(parts) == 2:
-                    formatted_codes.append(f"{parts[0].lower()}_{parts[1].upper()}")
+                    formatted_codes.append(
+                        f"{parts[0].lower()}_{parts[1].upper()}")
                 else:
                     formatted_codes.append(c_str)
             else:
                 # 对于 A股 (sh/sz/bj) 或 美股 (gb_)，保持全小写即可
                 formatted_codes.append(c_str.lower())
-                
+
         label = ",".join(formatted_codes)
         # ==========================================
 
@@ -941,17 +1000,18 @@ class FloatLabel(QWidget):
         total_pnl = 0.0
         has_pnl = False
         url = 'https://hq.sinajs.cn/list=' + label
-        headers = {'Referer': 'https://finance.sina.com.cn', 'User-Agent': 'Mozilla/5.0'}
+        headers = {'Referer': 'https://finance.sina.com.cn',
+                   'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, headers=headers, timeout=3)
         r.encoding = 'gbk'
-        
+
         for line in r.text.split('\n'):
             if not line or '"' not in line:
                 continue
-            
+
             prefix_part = line.split('="')[0]
             parts = line.split('="')[1].split(',')
-            
+
             # 判断是否为内盘期货 (nf_) 或 外盘期货 (hf_)
             is_nf_futures = "str_nf_" in prefix_part
             is_hf_futures = "str_hf_" in prefix_part
@@ -961,27 +1021,27 @@ class FloatLabel(QWidget):
             is_hk_stock = "str_rt_hk" in prefix_part or "str_hk" in prefix_part
             # 【新增】：统一的一个期货标志位，方便后续使用
             is_any_futures = is_nf_futures or is_hf_futures
-            
+
             if is_hf_futures:
 
-                #print(f"👉 成功进入外盘期货(hf_)解析分支！")
-                #print(f"👉 原始文本行: {line}")
-                #print(f"👉 拆分后的数组 (长度 {len(parts)}): {parts}")
-                #print("="*50 + "\n")
+                # print(f"👉 成功进入外盘期货(hf_)解析分支！")
+                # print(f"👉 原始文本行: {line}")
+                # print(f"👉 拆分后的数组 (长度 {len(parts)}): {parts}")
+                # print("="*50 + "\n")
 
-                if len(parts) < 14: 
+                if len(parts) < 14:
                     continue
-                code          = prefix_part.split('str_hf_')[-1]
+                code = prefix_part.split('str_hf_')[-1]
                 # 第 14 个元素（索引13）的名称清洗一下
                 name = parts[13].replace('"', '').replace(';', '')
                 opening_price = float(parts[8] or 0)
-                high_price    = float(parts[4] or 0)
-                low_price     = float(parts[5] or 0)
-                prev_close    = float(parts[7] or 0)
+                high_price = float(parts[4] or 0)
+                low_price = float(parts[5] or 0)
+                prev_close = float(parts[7] or 0)
                 current_price = float(parts[0] or 0)
-                first_pur     = float(parts[2] or 0)
-                first_sell    = float(parts[3] or 0)
-                
+                first_pur = float(parts[2] or 0)
+                first_sell = float(parts[3] or 0)
+
                 # 安全获取成交量：只有长度大于 14，才去取 parts[14]
                 if len(parts) > 14:
                     vol_str = parts[14].replace('"', '').replace(';', '')
@@ -989,46 +1049,46 @@ class FloatLabel(QWidget):
                 else:
                     deals_vol = 0.0  # 长度只有14的现货黄金，乖乖走这里
 
-                deals_amt     = current_price * deals_vol 
-                committee     = 0.0
-                pur_vol       = int(parts[10] or 0) * 100 
-                sel_vol       = int(parts[11] or 0) * 100
-                purchaser     = [pur_vol] + [0]*9 
-                pur_price     = [first_pur] + [0]*9
-                seller        = [sel_vol] + [0]*9
-                sel_price     = [first_sell] + [0]*9
-                etf           = False
+                deals_amt = current_price * deals_vol
+                committee = 0.0
+                pur_vol = int(parts[10] or 0) * 100
+                sel_vol = int(parts[11] or 0) * 100
+                purchaser = [pur_vol] + [0]*9
+                pur_price = [first_pur] + [0]*9
+                seller = [sel_vol] + [0]*9
+                sel_price = [first_sell] + [0]*9
+                etf = False
 
             elif is_nf_futures:
 
                 if len(parts) < 14:
                     continue
-                
-                code          = prefix_part.split('str_nf_')[-1]
-                name          = parts[0]
+
+                code = prefix_part.split('str_nf_')[-1]
+                name = parts[0]
                 opening_price = float(parts[2] or 0)
-                high_price    = float(parts[3] or 0)
-                low_price     = float(parts[4] or 0)
-                
+                high_price = float(parts[3] or 0)
+                low_price = float(parts[4] or 0)
+
                 # 【修复1】：昨收（昨结算）实际上在索引 10 的位置
-                prev_close    = float(parts[10] or 0) 
-                
-                first_pur     = float(parts[6] or 0)
-                first_sell    = float(parts[7] or 0)
+                prev_close = float(parts[10] or 0)
+
+                first_pur = float(parts[6] or 0)
+                first_sell = float(parts[7] or 0)
                 current_price = float(parts[8] or 0)
-                deals_vol     = float(parts[14] or 0)
-                
+                deals_vol = float(parts[14] or 0)
+
                 # 【修复2】：为了让下面的通用代码能算出正确的均价(avg = amt/vol)，
                 # 我们用 现价*成交量 倒推伪装一个“成交额”给它
-                deals_amt = current_price * deals_vol 
+                deals_amt = current_price * deals_vol
                 committee = 0.0
-                
+
                 # 期货本身就是手数，为了抵消下方 A 股的除以 100 逻辑，这里乘 100
-                pur_vol = int(parts[11] or 0) * 100 
+                pur_vol = int(parts[11] or 0) * 100
                 sel_vol = int(parts[12] or 0) * 100
-                purchaser = [pur_vol] + [0]*9 
+                purchaser = [pur_vol] + [0]*9
                 pur_price = [first_pur] + [0]*9
-                seller    = [sel_vol] + [0]*9
+                seller = [sel_vol] + [0]*9
                 sel_price = [first_sell] + [0]*9
                 etf = False
 
@@ -1037,148 +1097,148 @@ class FloatLabel(QWidget):
                 # 指数返回的数据非常短，通常只有名称、点数、涨跌额、涨跌幅等几个核心数据
                 if len(parts) < 4:
                     continue
-                    
-                code          = prefix_part.split('str_b_')[-1]
-                name          = parts[0].replace('"', '').replace(';', '')
+
+                code = prefix_part.split('str_b_')[-1]
+                name = parts[0].replace('"', '').replace(';', '')
                 current_price = float(parts[1] or 0)
-                
+
                 # 新浪全球指数通常 parts[2] 是涨跌额，parts[3] 是涨跌幅百分比
                 change_amount = float(parts[2] or 0)
-                
+
                 # 指数接口通常不给昨收，我们需要通过公式【昨收 = 现价 - 涨跌额】自己推算出来
-                prev_close    = current_price - change_amount
-                
+                prev_close = current_price - change_amount
+
                 # ====== 下面这些是指数没有的数据，统一填 0 防止你的浮窗报错 ======
                 opening_price = 0.0
-                high_price    = 0.0
-                low_price     = 0.0
-                first_pur     = 0.0
-                first_sell    = 0.0
-                deals_vol     = 0.0
-                deals_amt     = 0.0
-                committee     = 0.0
-                pur_vol       = 0 
-                sel_vol       = 0
-                purchaser     = [0]*10 
-                pur_price     = [0]*10
-                seller        = [0]*10
-                sel_price     = [0]*10
-                etf           = False
+                high_price = 0.0
+                low_price = 0.0
+                first_pur = 0.0
+                first_sell = 0.0
+                deals_vol = 0.0
+                deals_amt = 0.0
+                committee = 0.0
+                pur_vol = 0
+                sel_vol = 0
+                purchaser = [0]*10
+                pur_price = [0]*10
+                seller = [0]*10
+                sel_price = [0]*10
+                etf = False
 
             elif is_fx_futures:
                 if len(parts) < 10:
                     continue
-                    
-                code          = prefix_part.split('str_fx_s')[-1].upper()
-                name          = parts[9].replace('"', '').replace(';', '')  # 名称在第 9 位
+
+                code = prefix_part.split('str_fx_s')[-1].upper()
+                name = parts[9].replace('"', '').replace(';', '')  # 名称在第 9 位
                 current_price = float(parts[8] or 0)  # 现价在第 8 位
-                prev_close    = float(parts[3] or 0)  # 昨收在第 3 位
+                prev_close = float(parts[3] or 0)  # 昨收在第 3 位
                 opening_price = float(parts[5] or 0)
-                high_price    = float(parts[6] or 0)
-                low_price     = float(parts[7] or 0)
-                first_pur     = float(parts[1] or 0)  # 银行买入价
-                first_sell    = float(parts[2] or 0)  # 银行卖出价
-                
+                high_price = float(parts[6] or 0)
+                low_price = float(parts[7] or 0)
+                first_pur = float(parts[1] or 0)  # 银行买入价
+                first_sell = float(parts[2] or 0)  # 银行卖出价
 
                 # ------ 下面是没有的数据，统一填 0 防崩溃 ------
-                deals_vol     = 0.0
-                deals_amt     = 0.0
-                committee     = 0.0
-                pur_vol       = 0 
-                sel_vol       = 0
-                purchaser     = [0]*10 
-                pur_price     = [0]*10
-                seller        = [0]*10
-                sel_price     = [0]*10
-                etf           = False
+                deals_vol = 0.0
+                deals_amt = 0.0
+                committee = 0.0
+                pur_vol = 0
+                sel_vol = 0
+                purchaser = [0]*10
+                pur_price = [0]*10
+                seller = [0]*10
+                sel_price = [0]*10
+                etf = False
 
             elif is_hk_stock:
                 # ====== 新浪港股解析分支 (如 rt_hk01810) ======
                 if len(parts) < 13:
                     continue
-                
+
                 # 提取纯数字代码
                 if 'str_rt_hk' in prefix_part:
                     code = prefix_part.split('str_rt_hk')[-1]
                 else:
                     code = prefix_part.split('str_hk')[-1]
-                    
-                name          = parts[1].replace('"', '').replace(';', '') # 港股中文名在第 1 位 (第0位是英文简称)
+
+                name = parts[1].replace('"', '').replace(
+                    ';', '')  # 港股中文名在第 1 位 (第0位是英文简称)
                 opening_price = float(parts[2] or 0)  # 开盘价
-                prev_close    = float(parts[3] or 0)  # 昨收价
-                high_price    = float(parts[4] or 0)  # 最高价
-                low_price     = float(parts[5] or 0)  # 最低价
+                prev_close = float(parts[3] or 0)  # 昨收价
+                high_price = float(parts[4] or 0)  # 最高价
+                low_price = float(parts[5] or 0)  # 最低价
                 current_price = float(parts[6] or 0)  # 现价在第 6 位
-                
+
                 # 港股的买一和卖一
-                first_pur     = float(parts[9] or 0)
-                first_sell    = float(parts[10] or 0)
-                
+                first_pur = float(parts[9] or 0)
+                first_sell = float(parts[10] or 0)
+
                 # 港股成交量与成交额
-                deals_vol     = float(parts[11] or 0) 
-                deals_amt     = float(parts[12] or 0) 
-                
+                deals_vol = float(parts[11] or 0)
+                deals_amt = float(parts[12] or 0)
+
                 # ------ 补齐其他没有的数据，防崩溃 ------
-                committee     = 0.0
-                pur_vol       = 0 
-                sel_vol       = 0
-                purchaser     = [0]*10 
-                pur_price     = [first_pur] + [0]*9
-                seller        = [0]*10
-                sel_price     = [first_sell] + [0]*9
-                etf           = False
+                committee = 0.0
+                pur_vol = 0
+                sel_vol = 0
+                purchaser = [0]*10
+                pur_price = [first_pur] + [0]*9
+                seller = [0]*10
+                sel_price = [first_sell] + [0]*9
+                etf = False
 
             elif is_gb_stock:
                 # ====== 新浪美股解析分支 (如 gb_aapl) ======
                 if len(parts) < 20:
                     continue
-                    
-                code          = prefix_part.split('str_gb_')[-1].upper() # 转成大写 AAPL 显示
-                name          = parts[0].replace('"', '').replace(';', '')
+
+                code = prefix_part.split('str_gb_')[-1].upper()  # 转成大写 AAPL 显示
+                name = parts[0].replace('"', '').replace(';', '')
                 current_price = float(parts[1] or 0)  # 美股现价在第 1 位
                 change_amount = float(parts[2] or 0)  # 美股涨跌额在第 2 位
-                
+
                 # 美股接口有时昨收字段会漂移，最安全的方式是用公式反推昨收价：
-                prev_close    = current_price - change_amount
-                
+                prev_close = current_price - change_amount
+
                 opening_price = float(parts[5] or 0)  # 开盘
-                high_price    = float(parts[6] or 0)  # 最高
-                low_price     = float(parts[7] or 0)  # 最低
-                deals_vol     = float(parts[10] or 0) # 成交量
-                
+                high_price = float(parts[6] or 0)  # 最高
+                low_price = float(parts[7] or 0)  # 最低
+                deals_vol = float(parts[10] or 0)  # 成交量
+
                 # ------ 美股接口不提供买卖盘口数据，统一补 0 防崩溃 ------
-                first_pur     = 0.0
-                first_sell    = 0.0
-                deals_amt     = current_price * deals_vol  # 估算一个大概的成交额
-                committee     = 0.0
-                pur_vol       = 0 
-                sel_vol       = 0
-                purchaser     = [0]*10 
-                pur_price     = [0]*10
-                seller        = [0]*10
-                sel_price     = [0]*10
-                etf           = False
+                first_pur = 0.0
+                first_sell = 0.0
+                deals_amt = current_price * deals_vol  # 估算一个大概的成交额
+                committee = 0.0
+                pur_vol = 0
+                sel_vol = 0
+                purchaser = [0]*10
+                pur_price = [0]*10
+                seller = [0]*10
+                sel_price = [0]*10
+                etf = False
 
             else:
                 if len(parts) < 30:
                     continue
                 heads = prefix_part.split('_')
-                code          = heads[2]
-                name          = parts[0]
+                code = heads[2]
+                name = parts[0]
                 opening_price = float(parts[1] or 0)   # 开盘
-                prev_close    = float(parts[2] or 0)   # 昨收
+                prev_close = float(parts[2] or 0)   # 昨收
                 current_price = float(parts[3] or 0)   # 现价
-                high_price    = float(parts[4] or 0)   # 当日最高
-                low_price     = float(parts[5] or 0)   # 当日最低
-                first_pur     = float(parts[6] or 0)   # 买一
-                first_sell    = float(parts[7] or 0)   # 卖一
-                deals_vol     = float(parts[8] or 0)   # 成交量
-                deals_amt     = float(parts[9] or 0)   # 成交额
-                purchaser     = [int(x or 0) for x in parts[10:19:2]]  
-                pur_price     = [float(x or 0) for x in parts[11:20:2]]  
-                seller        = [int(x or 0) for x in parts[20:29:2]]  
-                sel_price     = [float(x or 0) for x in parts[21:30:2]]  
-                etf = code[2] in ('1','5') if len(code)>2 else False
+                high_price = float(parts[4] or 0)   # 当日最高
+                low_price = float(parts[5] or 0)   # 当日最低
+                first_pur = float(parts[6] or 0)   # 买一
+                first_sell = float(parts[7] or 0)   # 卖一
+                deals_vol = float(parts[8] or 0)   # 成交量
+                deals_amt = float(parts[9] or 0)   # 成交额
+                purchaser = [int(x or 0) for x in parts[10:19:2]]
+                pur_price = [float(x or 0) for x in parts[11:20:2]]
+                seller = [int(x or 0) for x in parts[20:29:2]]
+                sel_price = [float(x or 0) for x in parts[21:30:2]]
+                etf = code[2] in ('1', '5') if len(code) > 2 else False
 
             # 构建买一/卖一数据及其颜色信息，并添加位置箭头
             b1_label = ""
@@ -1188,6 +1248,7 @@ class FloatLabel(QWidget):
 
             # 决定小数精度用于比较是否相等（避免浮点微小误差）
             dec = 3 if etf else 2
+
             def almost_eq(a, b):
                 try:
                     return round(float(a), dec) == round(float(b), dec)
@@ -1267,19 +1328,21 @@ class FloatLabel(QWidget):
                 # 连续竞价时：买一固定红色，卖一固定绿色
                 b1_color_sign = 1
                 s1_color_sign = -1
-            
+
             if current_price == 0:
-                current_price = prev_close # 9:00 ~ 9:15 无数据
-            if opening_price == 0: 
+                current_price = prev_close  # 9:00 ~ 9:15 无数据
+            if opening_price == 0:
                 opening_price = current_price
                 high_price = current_price
                 low_price = current_price
 
             change = current_price - prev_close if prev_close else 0.0
-            change_pct = (current_price / prev_close - 1) * 100 if prev_close else 0.0
-            avg = (deals_amt / deals_vol) if deals_vol > 0 else prev_close # 均价
+            change_pct = (current_price / prev_close - 1) * \
+                100 if prev_close else 0.0
+            avg = (deals_amt / deals_vol) if deals_vol > 0 else prev_close  # 均价
             p_sum, s_sum = sum(purchaser), sum(seller)
-            committee = (100 * (p_sum - s_sum) / (p_sum + s_sum)) if (p_sum + s_sum) > 0 else 0.0 # 委比
+            committee = (100 * (p_sum - s_sum) / (p_sum + s_sum)
+                         ) if (p_sum + s_sum) > 0 else 0.0  # 委比
 
             # 触及涨跌停或日高/低显示箭头（涨跌停优先）
             # 涨跌停价计算：创业板/科创板±20%，ST±5%，其余±10%
@@ -1288,7 +1351,7 @@ class FloatLabel(QWidget):
             if not etf and prev_close > 0:
                 if "ST" in name or "st" in name:
                     limit_pct = 0.05
-                elif code[2:5] in ('300','301','688'):
+                elif code[2:5] in ('300', '301', '688'):
                     limit_pct = 0.20
                 else:
                     limit_pct = 0.10
@@ -1308,8 +1371,10 @@ class FloatLabel(QWidget):
                     elif current_price == low_price:
                         arrow = self.sym_low
                 else:
-                    if current_price == high_price: arrow = self.sym_high
-                    elif current_price == low_price: arrow = self.sym_low
+                    if current_price == high_price:
+                        arrow = self.sym_high
+                    elif current_price == low_price:
+                        arrow = self.sym_low
 
             # 封单预警检测
             try:
@@ -1328,17 +1393,20 @@ class FloatLabel(QWidget):
 
             # 新高新低报警检测
             try:
-                self._check_new_high_low_alert(code, name, current_price, high_price, low_price)
+                self._check_new_high_low_alert(
+                    code, name, current_price, high_price, low_price)
             except Exception:
                 pass
 
             # 涨跌停通知检测
             try:
-                self._check_limit_alert(code, name, current_price, limit_up, limit_down, dec)
+                self._check_limit_alert(
+                    code, name, current_price, limit_up, limit_down, dec)
             except Exception:
                 pass
 
-            k_payload = {"k": (opening_price, current_price, high_price, low_price, prev_close)}
+            k_payload = {"k": (opening_price, current_price,
+                               high_price, low_price, prev_close)}
 
             # 计算盈亏：(现价 - 成本) * 持仓数量
             cd = self.cost_data.get(code)
@@ -1354,19 +1422,21 @@ class FloatLabel(QWidget):
 
             # 委比格式化
             commi_label = self._fmt_signed(committee, 2) + "%"
-            
+
             # 智能提取代码短名
-            display_code = code[2:] if not is_any_futures and getattr(self, 'short_code', False) else code
+            display_code = code[2:] if not is_any_futures and getattr(
+                self, 'short_code', False) else code
 
             if not etf:
                 chg_fmt = self._fmt_signed(change, 2)
                 pct_fmt = self._fmt_signed(change_pct, 2) + "%"
-                
+
                 current_price_str = f"{arrow}{current_price:.2f}"
-                
+
                 price_data.append([
                     display_code,
-                    name if getattr(self, 'name_length', 0) == 0 else name[:self.name_length],
+                    name if getattr(self, 'name_length',
+                                    0) == 0 else name[:self.name_length],
                     current_price_str,
                     chg_fmt,
                     pct_fmt,
@@ -1374,8 +1444,10 @@ class FloatLabel(QWidget):
                     b1_label,
                     s1_label,
                     commi_label,
-                    f"{deals_vol}" if deals_vol<1e4 else (f"{deals_vol/1e4:.2f}万" if deals_vol<1e8 else f"{deals_vol/1e8:.2f}亿"),
-                    f"{deals_amt/1e4:.2f}万" if deals_amt<1e8 else (f"{deals_amt/1e8:.2f}亿" if deals_amt<1e12 else f"{deals_amt/1e12:.2f}万亿"),
+                    f"{deals_vol}" if deals_vol < 1e4 else (
+                        f"{deals_vol/1e4:.2f}万" if deals_vol < 1e8 else f"{deals_vol/1e8:.2f}亿"),
+                    f"{deals_amt/1e4:.2f}万" if deals_amt < 1e8 else (
+                        f"{deals_amt/1e8:.2f}亿" if deals_amt < 1e12 else f"{deals_amt/1e12:.2f}万亿"),
                     f"{avg:.2f}",
                     f"{high_price:.2f}",
                     f"{low_price:.2f}",
@@ -1385,12 +1457,13 @@ class FloatLabel(QWidget):
                 # ETF 的价格保留 3 位小数
                 chg_fmt = self._fmt_signed(change, 3)
                 pct_fmt = self._fmt_signed(change_pct, 2) + "%"
-                
+
                 current_price_str = f"{arrow}{current_price:.3f}"
-                
+
                 price_data.append([
                     display_code,
-                    name if getattr(self, 'name_length', 0) == 0 else name[:self.name_length],
+                    name if getattr(self, 'name_length',
+                                    0) == 0 else name[:self.name_length],
                     current_price_str,
                     chg_fmt,
                     pct_fmt,
@@ -1398,8 +1471,10 @@ class FloatLabel(QWidget):
                     b1_label,
                     s1_label,
                     commi_label,
-                    f"{deals_vol}" if deals_vol<1e4 else (f"{deals_vol/1e4:.2f}万" if deals_vol<1e8 else f"{deals_vol/1e8:.2f}亿"),
-                    f"{deals_amt/1e4:.2f}万" if deals_amt<1e8 else (f"{deals_amt/1e8:.2f}亿" if deals_amt<1e12 else f"{deals_amt/1e12:.2f}万亿"),
+                    f"{deals_vol}" if deals_vol < 1e4 else (
+                        f"{deals_vol/1e4:.2f}万" if deals_vol < 1e8 else f"{deals_vol/1e8:.2f}亿"),
+                    f"{deals_amt/1e4:.2f}万" if deals_amt < 1e8 else (
+                        f"{deals_amt/1e8:.2f}亿" if deals_amt < 1e12 else f"{deals_amt/1e12:.2f}万亿"),
                     f"{avg:.3f}",
                     f"{high_price:.3f}",
                     f"{low_price:.3f}",
@@ -1408,7 +1483,7 @@ class FloatLabel(QWidget):
 
             # 构建信号灯数据保持不变
             sign_data.append({
-                "delta": (change > 0) - (change < 0), 
+                "delta": (change > 0) - (change < 0),
                 "commi": (committee > 0) - (committee < 0),
                 "avg": (avg > prev_close) - (avg < prev_close),
                 "b1": b1_color_sign,
@@ -1417,12 +1492,13 @@ class FloatLabel(QWidget):
                 "high": (high_price > prev_close) - (high_price < prev_close) if prev_close else 0,
                 "low": (low_price > prev_close) - (low_price < prev_close) if prev_close else 0,
             })
-        
+
         return price_data, sign_data, total_pnl, has_pnl
 
     def _project_columns(self, full_rows, sign_data):
         # 从 ALL_HEADERS 中按显示顺序筛选已启用的列（使用双模式感知的可见性）
-        cols = [i for i, h in enumerate(self.ALL_HEADERS) if self._active_header_is_visible(h)]
+        cols = [i for i, h in enumerate(
+            self.ALL_HEADERS) if self._active_header_is_visible(h)]
         headers = [self.ALL_HEADERS[i] for i in cols]
 
         proj_rows, proj_meta = [], []
@@ -1431,7 +1507,8 @@ class FloatLabel(QWidget):
             proj_meta.append(sign_data[r])
 
         # 右对齐：除了名称、K线、卖一外的所有列都右对齐
-        right_cols = [i for i, h in enumerate(headers) if h not in ("名称", "K线", "卖一")]
+        right_cols = [i for i, h in enumerate(
+            headers) if h not in ("名称", "K线", "卖一")]
         self.model.set_align_right_cols(right_cols)
         self.model.set_rows_headers(proj_rows, headers, meta=proj_meta)
         self.model.set_color_scheme(self.fg, self.up_color, self.down_color)
@@ -1439,19 +1516,22 @@ class FloatLabel(QWidget):
         if "K线" in headers:
             col = headers.index("K线")
             self.k_column_visible_index = col
-            self.k_delegate.update_scheme(self.fg, self.up_color, self.down_color)
+            self.k_delegate.update_scheme(
+                self.fg, self.up_color, self.down_color)
             self.k_delegate.set_point_size(self.font.pointSize())
             self.table.setItemDelegateForColumn(col, self.k_delegate)
         else:
             if self.k_column_visible_index is not None:
-                self.table.setItemDelegateForColumn(self.k_column_visible_index, QStyledItemDelegate(self.table))
+                self.table.setItemDelegateForColumn(
+                    self.k_column_visible_index, QStyledItemDelegate(self.table))
                 self.k_column_visible_index = None
 
         self._fit_to_contents()
 
     def _refresh_from_function(self):
         try:
-            full_rows, sign, total_pnl, has_pnl = self._get_price(self.checked_codes)
+            full_rows, sign, total_pnl, has_pnl = self._get_price(
+                self.checked_codes)
         except Exception as e:
             try:
                 import requests as _req
@@ -1504,18 +1584,21 @@ class FloatLabel(QWidget):
             if s and s not in seen:
                 seen.add(s)
                 new.append(s)
-        if not new: 
+        if not new:
             new = ["sh000001"]
         self.codes = new
         # 清理已删除股票的成本数据
         if self.cost_data:
             keep = set(new)
-            self.cost_data = {k: v for k, v in self.cost_data.items() if k in keep}
+            self.cost_data = {k: v for k,
+                              v in self.cost_data.items() if k in keep}
         # 清理已删除股票的封单预警数据
         if self.alert_data:
             keep = set(new)
-            self.alert_data = {k: v for k, v in self.alert_data.items() if k in keep}
-            self._alert_state = {k: v for k, v in self._alert_state.items() if k in keep}
+            self.alert_data = {k: v for k,
+                               v in self.alert_data.items() if k in keep}
+            self._alert_state = {k: v for k,
+                                 v in self._alert_state.items() if k in keep}
         self._notify_change()
         self._refresh_from_function()
 
@@ -1527,7 +1610,7 @@ class FloatLabel(QWidget):
             if s and s not in seen:
                 seen.add(s)
                 new.append(s)
-        if not new: 
+        if not new:
             new = ["sh000001"]
         self.checked_codes = new
         self._notify_change()
@@ -1545,38 +1628,52 @@ class FloatLabel(QWidget):
             header = str(idx)
             if header not in self.ALL_HEADERS:
                 return
-        
+
         checked = bool(checked)
         prev = None
         try:
             if header == "代码":
-                prev = bool(getattr(self, 'code_visible', False)); self.code_visible = checked
+                prev = bool(getattr(self, 'code_visible', False))
+                self.code_visible = checked
             elif header == "名称":
-                prev = bool(getattr(self, 'name_visible', False)); self.name_visible = checked
+                prev = bool(getattr(self, 'name_visible', False))
+                self.name_visible = checked
             elif header == "现价":
-                prev = bool(getattr(self, 'price_visible', False)); self.price_visible = checked
+                prev = bool(getattr(self, 'price_visible', False))
+                self.price_visible = checked
             elif header == "涨跌值":
-                prev = bool(getattr(self, 'change_visible', False)); self.change_visible = checked
+                prev = bool(getattr(self, 'change_visible', False))
+                self.change_visible = checked
             elif header == "涨跌幅":
-                prev = bool(getattr(self, 'change_pct_visible', False)); self.change_pct_visible = checked
+                prev = bool(getattr(self, 'change_pct_visible', False))
+                self.change_pct_visible = checked
             elif header in ("买一", "卖一"):
-                prev = bool(getattr(self, 'b1s1_visible', False)); self.b1s1_visible = checked
+                prev = bool(getattr(self, 'b1s1_visible', False))
+                self.b1s1_visible = checked
             elif header == "委比":
-                prev = bool(getattr(self, 'commi_visible', False)); self.commi_visible = checked
+                prev = bool(getattr(self, 'commi_visible', False))
+                self.commi_visible = checked
             elif header == "成交量":
-                prev = bool(getattr(self, 'vol_visible', False)); self.vol_visible = checked
+                prev = bool(getattr(self, 'vol_visible', False))
+                self.vol_visible = checked
             elif header == "成交额":
-                prev = bool(getattr(self, 'amount_visible', False)); self.amount_visible = checked
+                prev = bool(getattr(self, 'amount_visible', False))
+                self.amount_visible = checked
             elif header == "均价":
-                prev = bool(getattr(self, 'avg_visible', False)); self.avg_visible = checked
+                prev = bool(getattr(self, 'avg_visible', False))
+                self.avg_visible = checked
             elif header == "日高":
-                prev = bool(getattr(self, 'high_visible', False)); self.high_visible = checked
+                prev = bool(getattr(self, 'high_visible', False))
+                self.high_visible = checked
             elif header == "日低":
-                prev = bool(getattr(self, 'low_visible', False)); self.low_visible = checked
+                prev = bool(getattr(self, 'low_visible', False))
+                self.low_visible = checked
             elif header == "K线":
-                prev = bool(getattr(self, 'kline_visible', False)); self.kline_visible = checked
+                prev = bool(getattr(self, 'kline_visible', False))
+                self.kline_visible = checked
             elif header == "盈亏":
-                prev = bool(getattr(self, 'pnl_visible', False)); self.pnl_visible = checked
+                prev = bool(getattr(self, 'pnl_visible', False))
+                self.pnl_visible = checked
         except Exception:
             prev = None
 
@@ -1593,7 +1690,7 @@ class FloatLabel(QWidget):
         self._refresh_from_function()
 
     def set_name_length(self, name_len: int):
-        if name_len >=0:
+        if name_len >= 0:
             self.name_length = name_len
             self._notify_change()
             self._refresh_from_function()
@@ -1917,7 +2014,8 @@ class FloatLabel(QWidget):
         prev = self._limit_alert_state.get(key)
         if prev is None:
             # 首次记录，不触发报警
-            self._limit_alert_state[key] = {"is_limit_up": is_limit_up, "is_limit_down": is_limit_down}
+            self._limit_alert_state[key] = {
+                "is_limit_up": is_limit_up, "is_limit_down": is_limit_down}
             return
 
         prev_up = prev["is_limit_up"]
@@ -1964,7 +2062,8 @@ class FloatLabel(QWidget):
                 self._fire_alert(title, msg)
 
         # 更新状态
-        self._limit_alert_state[key] = {"is_limit_up": is_limit_up, "is_limit_down": is_limit_down}
+        self._limit_alert_state[key] = {
+            "is_limit_up": is_limit_up, "is_limit_down": is_limit_down}
 
     def set_grid_visible(self, vis: bool):
         self.grid_visible = bool(vis)
@@ -1972,7 +2071,7 @@ class FloatLabel(QWidget):
         self._notify_change()
 
     def set_refresh_interval(self, seconds: int):
-        if seconds in {1,2,3,5,10,15,30,60}:
+        if seconds in {1, 2, 3, 5, 10, 15, 30, 60}:
             self.refresh_seconds = seconds
             self.timer.setInterval(seconds*1000)
             self._notify_change()
@@ -1980,8 +2079,10 @@ class FloatLabel(QWidget):
     def set_fg_color(self, c: QColor):
         if isinstance(c, QColor) and c.isValid():
             self.fg = QColor(c)
-            self.model.set_color_scheme(self.fg, self.up_color, self.down_color)
-            self.k_delegate.update_scheme(self.fg, self.up_color, self.down_color)
+            self.model.set_color_scheme(
+                self.fg, self.up_color, self.down_color)
+            self.k_delegate.update_scheme(
+                self.fg, self.up_color, self.down_color)
             self.apply_style()
             self._notify_change()
             self._defer_fit()
@@ -1989,8 +2090,10 @@ class FloatLabel(QWidget):
     def set_up_color(self, c: QColor):
         if isinstance(c, QColor) and c.isValid():
             self.up_color = QColor(c)
-            self.model.set_color_scheme(self.fg, self.up_color, self.down_color)
-            self.k_delegate.update_scheme(self.fg, self.up_color, self.down_color)
+            self.model.set_color_scheme(
+                self.fg, self.up_color, self.down_color)
+            self.k_delegate.update_scheme(
+                self.fg, self.up_color, self.down_color)
             self.apply_style()
             self._notify_change()
             self._defer_fit()
@@ -1998,8 +2101,10 @@ class FloatLabel(QWidget):
     def set_down_color(self, c: QColor):
         if isinstance(c, QColor) and c.isValid():
             self.down_color = QColor(c)
-            self.model.set_color_scheme(self.fg, self.up_color, self.down_color)
-            self.k_delegate.update_scheme(self.fg, self.up_color, self.down_color)
+            self.model.set_color_scheme(
+                self.fg, self.up_color, self.down_color)
+            self.k_delegate.update_scheme(
+                self.fg, self.up_color, self.down_color)
             self.apply_style()
             self._notify_change()
             self._defer_fit()
@@ -2309,7 +2414,7 @@ class FloatLabel(QWidget):
         act_header.toggled.connect(self.set_header_visible)
         menu.addAction(act_header)
 
-        act_grid = QAction("显示网格",menu, checkable=True)
+        act_grid = QAction("显示网格", menu, checkable=True)
         act_grid.setChecked(self.grid_visible)
         act_grid.toggled.connect(self.set_grid_visible)
         menu.addAction(act_grid)
@@ -2324,11 +2429,13 @@ class FloatLabel(QWidget):
         sub_mode.setEnabled(not self.dual_mode_enabled)
         act_mode_normal = QAction("正常模式", sub_mode, checkable=True)
         act_mode_normal.setChecked(self.manual_mode == "normal")
-        act_mode_normal.triggered.connect(lambda: self.set_manual_mode("normal"))
+        act_mode_normal.triggered.connect(
+            lambda: self.set_manual_mode("normal"))
         sub_mode.addAction(act_mode_normal)
         act_mode_simple = QAction("简易模式", sub_mode, checkable=True)
         act_mode_simple.setChecked(self.manual_mode == "simple")
-        act_mode_simple.triggered.connect(lambda: self.set_manual_mode("simple"))
+        act_mode_simple.triggered.connect(
+            lambda: self.set_manual_mode("simple"))
         sub_mode.addAction(act_mode_simple)
         menu.addMenu(sub_mode)
 
@@ -2389,7 +2496,7 @@ class FloatLabel(QWidget):
             # 记录按下时的初始位置
             self._drag_start_pos = ev.globalPosition().toPoint()
             self._drag_pos = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            
+
             self._pause_refresh()
             self.setFocus(Qt.MouseFocusReason)
             # 【关键】：返回 False，确保表格能收到点击事件，从而触发你的 Ctrl+点击
@@ -2398,13 +2505,14 @@ class FloatLabel(QWidget):
         # 3. 移动事件：这是区分“点击”和“拖动”的关键
         if ev.type() == QEvent.MouseMove and (ev.buttons() & Qt.LeftButton) and hasattr(self, "_drag_start_pos") and self._drag_start_pos:
             # 计算移动距离
-            move_dist = (ev.globalPosition().toPoint() - self._drag_start_pos).manhattanLength()
-            
+            move_dist = (ev.globalPosition().toPoint() -
+                         self._drag_start_pos).manhattanLength()
+
             # 如果移动距离超过 5 像素，才认为是“拖动”，开始移动窗口
             if move_dist > 5:
                 self.move(ev.globalPosition().toPoint() - self._drag_pos)
-                return True # 拖动时，拦截事件防止表格内容选中
-            
+                return True  # 拖动时，拦截事件防止表格内容选中
+
             # 如果移动距离很小，返回 False，允许表格处理“拖动选择”
             return False
 
@@ -2414,17 +2522,17 @@ class FloatLabel(QWidget):
             self._drag_pos = None
             self._resume_refresh()
             self._notify_change()
-            return False # 释放时也放行，避免影响表格逻辑
+            return False  # 释放时也放行，避免影响表格逻辑
 
         return QWidget.eventFilter(self, obj, ev)
 
-    def closeEvent(self, event): 
+    def closeEvent(self, event):
         event.ignore()
         self.hide()
 
     def showEvent(self, event):
         super().showEvent(event)
-        if self.timer and not self.timer.isActive(): 
+        if self.timer and not self.timer.isActive():
             self.timer.start()
         if self._keep_top_timer and not self._keep_top_timer.isActive():
             self._keep_top_timer.start()
@@ -2454,7 +2562,8 @@ class FloatLabel(QWidget):
             keyboard.remove_all_hotkeys()
         except Exception:
             pass
-        keyboard.add_hotkey(self.hotkey.lower(), lambda: self.hotkey_triggered.emit())
+        keyboard.add_hotkey(self.hotkey.lower(),
+                            lambda: self.hotkey_triggered.emit())
 
     def update_hotkey(self, new_hotkey: str):
         self.hotkey = new_hotkey.strip()
