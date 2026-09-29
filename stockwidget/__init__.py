@@ -12,7 +12,7 @@ StockWidget
 """
 
 # ---- 版本与出处信息（供“关于”页、README 等统一引用）----
-__version__ = "1.5.1"
+__version__ = "1.6.0"
 
 # 原始作者与官方仓库（再分发时必须保留，详见 LICENSE / NOTICE）
 UPSTREAM_AUTHOR = "sbr0574"

@@ -14,6 +14,8 @@ from PySide6.QtGui import QEnterEvent, QFont, QAction, QActionGroup, QColor, QGu
 from PySide6.QtWidgets import QApplication, QWidget, QMenu, QVBoxLayout, QLabel, QTableView, QHeaderView, QAbstractItemView, QFrame, QStyledItemDelegate
 
 from stockwidget.core.table_model import SimpleTableModel, KLineDelegate, SORTABLE_HEADERS, DEFAULT_UP_COLOR, DEFAULT_DOWN_COLOR, DEFAULT_TABLE_COLOR
+from stockwidget.core.intraday import is_ashare
+from stockwidget.ui.intraday_chart import IntradayWindow
 MIN_FONT_SIZE = 6
 
 
@@ -2527,6 +2529,26 @@ class FloatLabel(QWidget):
         self._notify_change()
 
     # ----- 交互 -----
+    def _open_intraday(self, code):
+        """弹出/复用分时图窗口，配色跟随当前浮窗方案。"""
+        win = getattr(self, "_intraday_win", None)
+        if win is None:
+            win = IntradayWindow(code, fg=self.fg, up=self.up_color,
+                                 down=self.down_color, bg=self.bg)
+            self._intraday_win = win
+            # 窗口销毁后释放引用，下次重新创建（避免悬空 C++ 对象）
+            win.destroyed.connect(
+                lambda _=None: setattr(self, "_intraday_win", None))
+            win.show()
+        else:
+            win.chart.update_scheme(fg=self.fg, up=self.up_color,
+                                    down=self.down_color, bg=self.bg)
+            win.set_code(code)
+            if not win.isVisible():
+                win.show()
+            win.raise_()
+            win.activateWindow()
+
     def contextMenuEvent(self, event):
         menu = QMenu(self)
 
@@ -2554,6 +2576,13 @@ class FloatLabel(QWidget):
             act_none.setEnabled(False)
             sub_web.addAction(act_none)
         menu.addMenu(sub_web)
+
+        # 查看分时：仅沪深京 A 股支持（腾讯分钟接口覆盖范围）
+        if open_code and is_ashare(open_code):
+            act_min = QAction(f"查看分时 - {open_code}", menu)
+            act_min.triggered.connect(
+                lambda _=False, c=open_code: self._open_intraday(c))
+            menu.addAction(act_min)
 
         # 快捷排序：按当前可见且可排序的列生成选项（含"不排序"）
         sub_sort = QMenu("快捷排序", menu)
@@ -2729,7 +2758,8 @@ class FloatLabel(QWidget):
         self._defer_fit()
         # 建窗/显隐后 Qt 会重置扩展样式，延一帧重新断言穿透，保证与状态一致
         if getattr(self, "mouse_through_enabled", False):
-            QTimer.singleShot(0, lambda: self._apply_click_through_native(True))
+            QTimer.singleShot(
+                0, lambda: self._apply_click_through_native(True))
 
     def hideEvent(self, event):
         super().hideEvent(event)
