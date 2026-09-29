@@ -2,7 +2,8 @@ import os
 import re
 from functools import partial
 
-from PySide6.QtCore import Qt, QSize
+import requests
+from PySide6.QtCore import Qt, QSize, Signal, QThread
 from PySide6.QtGui import QColor, QFontDatabase, QKeySequence, QDoubleValidator, QIntValidator, QAction
 from PySide6.QtWidgets import (
     QScrollArea, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QTabWidget, QPushButton, QSlider,
@@ -15,6 +16,32 @@ from PySide6.QtWidgets import QSizePolicy
 from stockwidget import (
     __version__, UPSTREAM_AUTHOR, UPSTREAM_REPO, UPSTREAM_REPO_GITEE,
     LICENSE_NAME, LICENSE_URL)
+
+
+class UpdateCheckerThread(QThread):
+    """后台请求 GitHub Releases 最新版，避免阻塞 UI。"""
+    # 自定义结果信号（不复名 finished，避免覆盖 QThread 内建信号）
+    checked = Signal(bool, str)  # (成功?, 最新 tag 或错误信息)
+
+    def run(self):
+        try:
+            resp = requests.get(
+                "https://api.github.com/repos/sbr0574/StockWidget/releases/latest",
+                headers={"User-Agent": "StockWidget"}, timeout=10)
+            resp.raise_for_status()
+            tag = (resp.json().get("tag_name") or "").lstrip("vV")
+            if tag:
+                self.checked.emit(True, tag)
+            else:
+                self.checked.emit(False, "未获取到版本信息")
+        except Exception:
+            self.checked.emit(False, "网络请求失败，请稍后重试")
+
+
+def _ver_tuple(v):
+    """'1.4.2' -> (1, 4, 2)；非数字段忽略，解析失败视为最小元组。"""
+    parts = re.findall(r"\d+", str(v))
+    return tuple(int(p) for p in parts) if parts else (0,)
 
 
 class CostDialog(QDialog):
@@ -220,8 +247,8 @@ class SettingsDialog(QDialog):
         self.tab_sizes = {
             0: QSize(480, 300),
             1: QSize(580, 750),
-            2: QSize(480, 460),
-            3: QSize(480, 280),
+            2: QSize(480, 520),
+            3: QSize(480, 400),
             4: QSize(480, 720),
             5: QSize(520, 480),
             6: QSize(560, 520),
@@ -541,6 +568,12 @@ class SettingsDialog(QDialog):
         self.btn_fg.setFixedWidth(90)
         self.btn_bg = QPushButton("背景颜色…")
         self.btn_bg.setFixedWidth(90)
+        # 中性色（非涨非跌的行情文字）与统一颜色开关
+        self.btn_neutral_color = QPushButton("中性色…")
+        self.btn_neutral_color.setFixedWidth(90)
+        self.chk_unified_color = QCheckBox("统一颜色（忽略涨跌分色）")
+        self.chk_unified_color.setChecked(
+            bool(getattr(self.win, 'unified_color', False)))
         # 3.2 恢复默认按钮
         self.btn_reset_colors = QPushButton("恢复默认")
         self.btn_reset_colors.setFixedWidth(90)
@@ -576,7 +609,9 @@ class SettingsDialog(QDialog):
         gl_color.addWidget(self.btn_down_color, 0, 2, 1, 2)
         gl_color.addWidget(self.btn_fg, 0, 4, 1, 2)
         gl_color.addWidget(self.btn_bg, 1, 0, 1, 2)
+        gl_color.addWidget(self.btn_neutral_color, 1, 2, 1, 2)
         gl_color.addWidget(self.btn_reset_colors, 1, 4, 1, 2)
+        gl_color.addWidget(self.chk_unified_color, 6, 0, 1, 6)
         gl_color.addWidget(QLabel("表格不透明度："), 2, 0, 1, 2)
         gl_color.addWidget(self.slider_grid_alpha, 2, 2, 1, 3)
         gl_color.addWidget(self.lbl_grid_alpha, 2, 5, 1, 1)
@@ -643,10 +678,23 @@ class SettingsDialog(QDialog):
         self.edit_hotkey = QKeySequenceEdit()
         self.edit_hotkey.setKeySequence(QKeySequence(self.win.hotkey))
         gl_hotkey.addWidget(self.edit_hotkey, 0, 1)
+        gl_hotkey.addWidget(QLabel("鼠标穿透开关："), 1, 0, 1, 1)
+        self.edit_through_hotkey = QKeySequenceEdit()
+        self.edit_through_hotkey.setKeySequence(
+            QKeySequence(getattr(self.win, "through_hotkey", "Ctrl+Alt+C")))
+        gl_hotkey.addWidget(self.edit_through_hotkey, 1, 1)
+        self.chk_mouse_through = QCheckBox("启用鼠标穿透（点击直达下层窗口）")
+        self.chk_mouse_through.setChecked(
+            bool(getattr(self.win, "mouse_through_enabled", False)))
+        gl_hotkey.addWidget(self.chk_mouse_through, 2, 0, 1, 2)
         # 开机启动复选框
         self.chk_start_on_boot = QCheckBox("开机启动")
         self.chk_start_on_boot.setChecked(bool(self.win.start_on_boot))
-        other_settings.addWidget(self.chk_start_on_boot)
+        gl_hotkey.addWidget(self.chk_start_on_boot, 3, 0, 1, 2)
+        self.lbl_hotkey_status = QLabel("")
+        self.lbl_hotkey_status.setTextFormat(Qt.RichText)
+        self.lbl_hotkey_status.setStyleSheet("color: #666666;")
+        gl_hotkey.addWidget(self.lbl_hotkey_status, 4, 0, 1, 2)
         other_settings.addWidget(g_hotkey)
 
         # 窗口锚点
@@ -1011,6 +1059,22 @@ class SettingsDialog(QDialog):
         scroll_about.setWidget(lbl_about)
         lay_about.addWidget(scroll_about)
 
+        # 底部：检查更新
+        row_upd = QHBoxLayout()
+        row_upd.setContentsMargins(2, 2, 2, 2)
+        self.btn_check_update = QPushButton("检查更新")
+        self.lbl_update_status = QLabel(f"当前版本 v{__version__}")
+        self.lbl_update_status.setStyleSheet("color: #666666;")
+        self.lbl_update_status.setTextFormat(Qt.RichText)
+        self.lbl_update_status.setOpenExternalLinks(True)
+        row_upd.addWidget(self.btn_check_update)
+        row_upd.addWidget(self.lbl_update_status)
+        row_upd.addStretch(1)
+        lay_about.addLayout(row_upd)
+
+        self._upd_thread = None
+        self.btn_check_update.clicked.connect(self._on_check_update)
+
         self.tabs.addTab(tab_about, "关于")
 
         # ---- 连接 ----
@@ -1034,9 +1098,12 @@ class SettingsDialog(QDialog):
             self._on_name_length_changed)
         self.btn_up_color.clicked.connect(self.pick_up_color)
         self.btn_down_color.clicked.connect(self.pick_down_color)
+        self.btn_neutral_color.clicked.connect(self.pick_neutral_color)
         self.btn_fg.clicked.connect(self.pick_fg)
         self.btn_bg.clicked.connect(self.pick_bg)
         self.btn_reset_colors.clicked.connect(self._on_reset_colors)
+        self.chk_unified_color.toggled.connect(self._on_unified_color_toggled)
+        self._sync_unified_color_buttons()
         self.slider_bg_alpha.valueChanged.connect(self.apply_bg_alpha)
         self.slider_win_opacity.valueChanged.connect(self.apply_win_opacity)
         self.slider_grid_alpha.valueChanged.connect(self.apply_grid_alpha)
@@ -1045,7 +1112,14 @@ class SettingsDialog(QDialog):
         self.slider_font.valueChanged.connect(self.apply_font_size)
         self.slider_line.valueChanged.connect(self._on_line_changed)
         self.edit_hotkey.editingFinished.connect(self._on_hotkey_changed)
+        self.edit_through_hotkey.editingFinished.connect(
+            self._on_through_hotkey_changed)
+        self.chk_mouse_through.toggled.connect(self._on_mouse_through_toggled)
         self.chk_start_on_boot.toggled.connect(self._on_start_on_boot_toggled)
+        try:
+            self._refresh_hotkey_status_label()
+        except Exception:
+            pass
         self.chk_table_header.toggled.connect(self._on_header_toggled)
         self.chk_table_grid.toggled.connect(self._on_grid_toggled)
         # icon controls
@@ -1529,6 +1603,22 @@ class SettingsDialog(QDialog):
         if c.isValid():
             self.win.set_down_color(c)
 
+    def pick_neutral_color(self):
+        c = QColorDialog.getColor(
+            getattr(self.win, 'neutral_color', self.win.fg), self, "选择中性色")
+        if c.isValid():
+            self.win.set_neutral_color(c)
+
+    def _on_unified_color_toggled(self, checked: bool):
+        self.win.set_unified_color(bool(checked))
+        self._sync_unified_color_buttons()
+
+    def _sync_unified_color_buttons(self):
+        """统一颜色开启时涨/跌/中性分色不生效，置灰三个按钮以明确关系。"""
+        sep = not self.chk_unified_color.isChecked()
+        for b in (self.btn_up_color, self.btn_down_color, self.btn_neutral_color):
+            b.setEnabled(sep)
+
     def pick_bg(self):
         base = QColor(self.win.bg)
         base.setAlpha(255)
@@ -1569,6 +1659,41 @@ class SettingsDialog(QDialog):
             self.win.update_hotkey(new_hotkey)
         except Exception:
             pass
+        self._refresh_hotkey_status_label()
+
+    def _on_through_hotkey_changed(self):
+        new_hotkey = self.edit_through_hotkey.keySequence().toString()
+        try:
+            self.win.update_through_hotkey(new_hotkey)
+        except Exception:
+            pass
+        self._refresh_hotkey_status_label()
+
+    def _on_mouse_through_toggled(self, checked: bool):
+        try:
+            self.win.set_mouse_through(bool(checked))
+        except Exception:
+            pass
+
+    def _refresh_hotkey_status_label(self):
+        """显示两个全局快捷键的注册成否（失败常见于被其他程序占用）。"""
+        st = self.win.hotkey_register_status() if hasattr(
+            self.win, "hotkey_register_status") else {}
+        if not st:
+            self.lbl_hotkey_status.setText("快捷键状态：尚未注册")
+            return
+
+        def frag(name, key, ok):
+            color = "#2e7d32" if ok else "#c62828"
+            mark = "✓" if ok else "✗"
+            return f"{name} {key or '(未设置)'} <span style='color:{color}'>{mark}</span>"
+        parts = [frag("显隐键", self.win.hotkey, st.get("show", False)),
+                 frag("穿透键", getattr(self.win, "through_hotkey", ""),
+                      st.get("through", False))]
+        txt = "注册状态：" + "　".join(parts)
+        if not (st.get("show") and st.get("through")):
+            txt += "（失败通常是键被占用或缺少权限）"
+        self.lbl_hotkey_status.setText(txt)
 
     def _on_icon_changed(self, idx: int):
         try:
@@ -1602,6 +1727,39 @@ class SettingsDialog(QDialog):
                 # trigger change handler will call app.set_app_icon
         except Exception:
             pass
+
+    # —— 检查更新 ——
+    def _on_check_update(self):
+        """点击"检查更新"：后台线程请求 Releases，结果回到 _on_update_checked。"""
+        if self._upd_thread is not None and self._upd_thread.isRunning():
+            return
+        self.btn_check_update.setEnabled(False)
+        self.lbl_update_status.setText(f"当前版本 v{__version__}，检查中…")
+        self._upd_thread = UpdateCheckerThread(self)
+        self._upd_thread.checked.connect(self._on_update_checked)
+        self._upd_thread.start()
+
+    def _on_update_checked(self, ok, info):
+        self.btn_check_update.setEnabled(True)
+        if not ok:
+            self.lbl_update_status.setText(f"当前版本 v{__version__}；{info}")
+            return
+        if _ver_tuple(info) > _ver_tuple(__version__):
+            self.lbl_update_status.setText(
+                f'发现新版本 v{info}（当前 v{__version__}）　'
+                f'<a href="{UPSTREAM_REPO}/releases/latest">前往下载</a>')
+        else:
+            self.lbl_update_status.setText(
+                f"当前版本 v{__version__}，已是最新（最新 release v{info}）")
+
+    def done(self, r):
+        # 关闭对话框时收尾后台检查线程
+        if getattr(self, "_upd_thread", None) is not None:
+            try:
+                self._upd_thread.wait(3000)
+            except Exception:
+                pass
+        super().done(r)
 
     # —— 涨跌异动报警槽 --
     def _on_price_alert_toggled(self, checked: bool):

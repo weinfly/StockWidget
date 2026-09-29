@@ -8,10 +8,10 @@ from functools import partial
 import webbrowser
 
 from PySide6.QtCore import QPropertyAnimation, QRect, Qt, QEvent, QTimer, Signal, QPoint
-from PySide6.QtGui import QEnterEvent, QFont, QAction, QColor, QGuiApplication, QPalette
+from PySide6.QtGui import QEnterEvent, QFont, QAction, QActionGroup, QColor, QGuiApplication, QPalette
 from PySide6.QtWidgets import QApplication, QWidget, QMenu, QVBoxLayout, QLabel, QTableView, QHeaderView, QAbstractItemView, QFrame, QStyledItemDelegate
 
-from stockwidget.core.table_model import SimpleTableModel, KLineDelegate, DEFAULT_UP_COLOR, DEFAULT_DOWN_COLOR, DEFAULT_TABLE_COLOR
+from stockwidget.core.table_model import SimpleTableModel, KLineDelegate, SORTABLE_HEADERS, DEFAULT_UP_COLOR, DEFAULT_DOWN_COLOR, DEFAULT_TABLE_COLOR
 MIN_FONT_SIZE = 6
 
 
@@ -91,6 +91,10 @@ class FloatLabel(QWidget):
             cfg.get("up_color", DEFAULT_UP_COLOR.name(QColor.HexRgb)))   # 涨颜色
         self.down_color = QColor(
             cfg.get("down_color", DEFAULT_DOWN_COLOR.name(QColor.HexRgb)))  # 跌颜色
+        # 中性色（默认同文字色）与统一颜色开关（默认关闭，保持涨/跌分色的现有观感）
+        self.neutral_color = QColor(
+            cfg.get("neutral_color", self.fg.name(QColor.HexRgb)))
+        self.unified_color = bool(cfg.get("unified_color", False))
         self.grid_alpha_pct = max(
             0, min(100, int(cfg.get("grid_alpha_pct", 31))))  # 表格线/边框不透明度(%)
         self.header_alpha_pct = max(
@@ -99,6 +103,11 @@ class FloatLabel(QWidget):
         self.opacity_pct = int(cfg.get("opacity_pct", 90))           # 透明度
 
         self.hotkey = cfg.get("hotkey", "Ctrl+Alt+F")           # 快捷键
+        self.through_hotkey = cfg.get(
+            "through_hotkey", "Ctrl+Alt+C")  # 鼠标穿透快捷键
+        self.mouse_through_enabled = bool(
+            cfg.get("mouse_through_enabled", False))  # 鼠标穿透开关
+        self._hotkey_ok = None   # 快捷键注册状态（None=未注册/未知，dict=成否）
         self.start_on_boot = bool(cfg.get("start_on_boot", False))
 
         # 锚点：'left' 或 'right'，决定窗口宽度变化时保持哪一边对齐
@@ -305,6 +314,9 @@ class FloatLabel(QWidget):
 
         self.hotkey_triggered.connect(self.toggle_win)
         self._register_hotkey()
+        # 启动时恢复上次会话的鼠标穿透状态（快捷键注册后，保证还能用 Ctrl+Alt+C 关）
+        if self.mouse_through_enabled:
+            self.set_mouse_through(True)
 
         # UI
         self.panel = QWidget(self)
@@ -332,8 +344,13 @@ class FloatLabel(QWidget):
         self.table.horizontalHeader().setFont(self.font)
         self.table.verticalHeader().setMinimumSectionSize(1)
         self.table.verticalHeader().setDefaultSectionSize(1)
+        # 表头隐藏时对鼠标透明（拖动/双击穿透到窗口）；可见时保持可点击（用于点击排序）
         self.table.horizontalHeader().setAttribute(
-            Qt.WA_TransparentForMouseEvents, True)
+            Qt.WA_TransparentForMouseEvents, not self.header_visible)
+        self.table.horizontalHeader().setSectionsClickable(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
+        self.table.horizontalHeader().sectionClicked.connect(
+            self._on_header_section_clicked)
         self.table.setTextElideMode(Qt.ElideNone)
         self.table.setItemDelegate(NoSelectionDelegate())
         # 表格自身不处理右键菜单，确保事件冒泡到 FloatLabel.contextMenuEvent
@@ -362,8 +379,14 @@ class FloatLabel(QWidget):
 
         self.model = SimpleTableModel(
             headers=self.ALL_HEADERS, align_right_cols=[1, 2, 3, 4, 5])
-        self.model.set_color_scheme(self.fg, self.up_color, self.down_color)
+        self._apply_color_scheme()
+        self.model.sort_changed.connect(self._on_model_sort_changed)
         self.table.setModel(self.model)
+
+        # 排序状态持久化：读取上次会话的排序列/方向，首次刷新后恢复
+        self._saved_sort = (str(cfg.get("sort_column", "") or ""),
+                            int(cfg.get("sort_order", 0) or 0))
+        self._sort_restored = False
 
         self.k_delegate = KLineDelegate(self.table, base_pt=12)
         self.k_delegate.update_scheme(self.fg, self.up_color, self.down_color)
@@ -420,13 +443,52 @@ class FloatLabel(QWidget):
         col = index.column()
 
         if (modifiers & Qt.ControlModifier) and (col == 0):
-            rows = index.row()
-            row_codes = getattr(self, "_row_codes", self.checked_codes)
-            if 0 <= rows < len(row_codes):
-                code = row_codes[rows]
+            # 经模型取码：自动跟随排序置换，不会错行
+            code = self.model.row_code(index.row())
+            if code:
                 url = self._get_xueqiu_url(code)
                 print(url)
                 webbrowser.open(url)
+
+    def _on_header_section_clicked(self, logical_index):
+        """单击表头排序：同一列按 降序->升序->不排序 循环（与上游一致）。"""
+        headers = self.model._headers
+        if not (0 <= logical_index < len(headers)):
+            return
+        header = headers[logical_index]
+        if header not in SORTABLE_HEADERS:
+            return
+        qt_order = self.model.cycle_sort(header)
+        self._sync_sort_indicator(logical_index, qt_order)
+
+    def _on_model_sort_changed(self, header, order):
+        """模型排序变化（右键菜单/恢复等入口）：同步表头箭头并保存配置。"""
+        qt_order = {1: Qt.AscendingOrder,
+                    2: Qt.DescendingOrder}.get(order, None)
+        idx = self.model._headers.index(
+            header) if header in self.model._headers else -1
+        self._sync_sort_indicator(idx, qt_order)
+        self._notify_change()
+
+    def _sync_sort_indicator(self, logical_index, qt_order):
+        hdr = self.table.horizontalHeader()
+        if qt_order is None:
+            hdr.setSortIndicator(-1, Qt.AscendingOrder)
+        else:
+            hdr.setSortIndicator(logical_index, qt_order)
+
+    def _apply_menu_sort(self, header):
+        """右键菜单选择排序列（默认降序）；header 为空串表示不排序。"""
+        if getattr(self, "_in_menu_sort", False):
+            return
+        self._in_menu_sort = True
+        try:
+            if header:
+                self.model.sort_by_header(header, 2)
+            else:
+                self.model.sort_by_header("", 0)
+        finally:
+            self._in_menu_sort = False
 
     def _get_sina_url(self, code):
         # 1. A 股股票 (sh/sz) -> 标准行情页
@@ -684,6 +746,9 @@ class FloatLabel(QWidget):
             "b1s1_display": getattr(self, 'b1s1_display', 'qty'),
             "header_visible": self.header_visible,
             "grid_visible": self.grid_visible,
+            # 排序状态（列标题 + 0不排序/1升序/2降序），下次启动恢复
+            "sort_column": self.model.sort_state()[0] or "",
+            "sort_order": self.model.sort_state()[1],
             "refresh_seconds": self.refresh_seconds,
             "fg": self.fg.name(QColor.HexRgb),
             "bg": {"r": self.bg.red(), "g": self.bg.green(), "b": self.bg.blue(), "a": self.bg.alpha()},
@@ -693,10 +758,14 @@ class FloatLabel(QWidget):
             "line_extra_px": self.line_extra_px,
             "up_color": self.up_color.name(QColor.HexRgb),
             "down_color": self.down_color.name(QColor.HexRgb),
+            "neutral_color": self.neutral_color.name(QColor.HexRgb),
+            "unified_color": bool(self.unified_color),
             "grid_alpha_pct": int(self.grid_alpha_pct),
             "header_alpha_pct": int(self.header_alpha_pct),
             "pos": {"x": self.x(), "y": self.y()},
             "hotkey": self.hotkey,
+            "through_hotkey": self.through_hotkey,
+            "mouse_through_enabled": bool(self.mouse_through_enabled),
             "start_on_boot": bool(self.start_on_boot),
             "anchor": self.anchor,
             "sym_high": self.sym_high,
@@ -1526,7 +1595,7 @@ class FloatLabel(QWidget):
 
         return price_data, sign_data, total_pnl, has_pnl, row_codes
 
-    def _project_columns(self, full_rows, sign_data):
+    def _project_columns(self, full_rows, sign_data, row_codes):
         # 从 ALL_HEADERS 中按显示顺序筛选已启用的列（使用双模式感知的可见性）
         cols = [i for i, h in enumerate(
             self.ALL_HEADERS) if self._active_header_is_visible(h)]
@@ -1541,8 +1610,17 @@ class FloatLabel(QWidget):
         right_cols = [i for i, h in enumerate(
             headers) if h not in ("名称", "K线", "卖一")]
         self.model.set_align_right_cols(right_cols)
-        self.model.set_rows_headers(proj_rows, headers, meta=proj_meta)
-        self.model.set_color_scheme(self.fg, self.up_color, self.down_color)
+        # 行代码随模型一起维护置换，排序后取码依然正确
+        self.model.set_rows_headers(
+            proj_rows, headers, meta=proj_meta, codes=row_codes)
+        self._apply_color_scheme()
+
+        # 首次拿到数据后恢复上次会话的排序状态
+        if not self._sort_restored:
+            self._sort_restored = True
+            saved_col, saved_order = getattr(self, "_saved_sort", ("", 0))
+            if saved_col and saved_order and saved_col in headers:
+                self.model.sort_by_header(saved_col, saved_order)
 
         if "K线" in headers:
             col = headers.index("K线")
@@ -1578,9 +1656,9 @@ class FloatLabel(QWidget):
             self._clear_error()
         except Exception:
             pass
-        # 保存与模型行对齐的实际代码列表，供右键/Ctrl+点击取用
+        # 保存与模型行对齐的实际代码列表（已改由模型维护置换，此处仅供旧代码路径参考）
         self._row_codes = list(row_codes)
-        self._project_columns(full_rows, sign)
+        self._project_columns(full_rows, sign, row_codes)
         # 通知外部更新总盈亏指示（用于托盘图标红绿灯泡）
         try:
             if callable(self._pnl_callback):
@@ -1739,6 +1817,12 @@ class FloatLabel(QWidget):
     def set_header_visible(self, vis: bool):
         self.header_visible = bool(vis)
         self.table.horizontalHeader().setVisible(self.header_visible)
+        # 表头可见性切换时同步可点击性（隐藏时恢复拖动/双击穿透）
+        self.table.horizontalHeader().setAttribute(
+            Qt.WA_TransparentForMouseEvents, not self.header_visible)
+        if not self.header_visible:
+            # 表头隐藏时清除排序（与上游行为一致，避免不可见的排序默默生效）
+            self.model.sort_by_header("", 0)
         self._notify_change()
         self._defer_fit()
 
@@ -2109,11 +2193,16 @@ class FloatLabel(QWidget):
             self.timer.setInterval(seconds*1000)
             self._notify_change()
 
+    def _apply_color_scheme(self):
+        """把当前涨/跌/中性/统一颜色方案下发到表格模型。"""
+        self.model.set_color_scheme(
+            self.fg, self.up_color, self.down_color,
+            neutral=self.neutral_color, unified=self.unified_color)
+
     def set_fg_color(self, c: QColor):
         if isinstance(c, QColor) and c.isValid():
             self.fg = QColor(c)
-            self.model.set_color_scheme(
-                self.fg, self.up_color, self.down_color)
+            self._apply_color_scheme()
             self.k_delegate.update_scheme(
                 self.fg, self.up_color, self.down_color)
             self.apply_style()
@@ -2123,8 +2212,7 @@ class FloatLabel(QWidget):
     def set_up_color(self, c: QColor):
         if isinstance(c, QColor) and c.isValid():
             self.up_color = QColor(c)
-            self.model.set_color_scheme(
-                self.fg, self.up_color, self.down_color)
+            self._apply_color_scheme()
             self.k_delegate.update_scheme(
                 self.fg, self.up_color, self.down_color)
             self.apply_style()
@@ -2134,20 +2222,32 @@ class FloatLabel(QWidget):
     def set_down_color(self, c: QColor):
         if isinstance(c, QColor) and c.isValid():
             self.down_color = QColor(c)
-            self.model.set_color_scheme(
-                self.fg, self.up_color, self.down_color)
+            self._apply_color_scheme()
             self.k_delegate.update_scheme(
                 self.fg, self.up_color, self.down_color)
             self.apply_style()
             self._notify_change()
             self._defer_fit()
 
+    def set_neutral_color(self, c: QColor):
+        if isinstance(c, QColor) and c.isValid():
+            self.neutral_color = QColor(c)
+            self._apply_color_scheme()
+            self._notify_change()
+
+    def set_unified_color(self, enabled: bool):
+        """统一颜色：开启后所有行情文字使用同一文字色，忽略涨/跌/中性分色。"""
+        self.unified_color = bool(enabled)
+        self._apply_color_scheme()
+        self._notify_change()
+
     def reset_default_colors(self):
-        """恢复涨/跌/表格颜色为默认值。"""
+        """恢复涨/跌/中性/表格颜色为默认值（统一颜色开关保持当前状态）。"""
         self.up_color = QColor(DEFAULT_UP_COLOR)
         self.down_color = QColor(DEFAULT_DOWN_COLOR)
         self.fg = QColor(DEFAULT_TABLE_COLOR)
-        self.model.set_color_scheme(self.fg, self.up_color, self.down_color)
+        self.neutral_color = QColor(DEFAULT_TABLE_COLOR)
+        self._apply_color_scheme()
         self.k_delegate.update_scheme(self.fg, self.up_color, self.down_color)
         self.apply_style()
         self._notify_change()
@@ -2427,13 +2527,12 @@ class FloatLabel(QWidget):
     def contextMenuEvent(self, event):
         menu = QMenu(self)
 
-        # 定位右键命中的股票行（表格子控件未处理的右键事件会冒泡到这里）
+        # 定位右键命中的股票行（经模型取码，自动跟随排序置换）
         hit_index = self.table.indexAt(
             self.table.viewport().mapFromGlobal(event.globalPos()))
-        row_codes = getattr(self, "_row_codes", self.checked_codes)
         open_code = None
-        if hit_index.isValid() and 0 <= hit_index.row() < len(row_codes):
-            open_code = row_codes[hit_index.row()]
+        if hit_index.isValid():
+            open_code = self.model.row_code(hit_index.row())
 
         # 在网页打开（腾讯/新浪）：仅当右键落在具体股票行时可用
         sub_web = QMenu("在网页打开", menu)
@@ -2452,6 +2551,28 @@ class FloatLabel(QWidget):
             act_none.setEnabled(False)
             sub_web.addAction(act_none)
         menu.addMenu(sub_web)
+
+        # 快捷排序：按当前可见且可排序的列生成选项（含"不排序"）
+        sub_sort = QMenu("快捷排序", menu)
+        cur_header, cur_order = self.model.sort_state()
+        grp = QActionGroup(sub_sort)
+        grp.setExclusive(True)
+        for h in self.model._headers:
+            if h not in SORTABLE_HEADERS:
+                continue
+            act = QAction(h, sub_sort, checkable=True)
+            act.setChecked(cur_header == h)
+            act.toggled.connect(
+                lambda on, hh=h: self._apply_menu_sort(hh) if on else None)
+            grp.addAction(act)
+            sub_sort.addAction(act)
+        act_unsort = QAction("不排序（恢复添加顺序）", sub_sort, checkable=True)
+        act_unsort.setChecked(not cur_header)
+        act_unsort.toggled.connect(
+            lambda on: self._apply_menu_sort("") if on else None)
+        grp.addAction(act_unsort)
+        sub_sort.addAction(act_unsort)
+        menu.addMenu(sub_sort)
         menu.addSeparator()
 
         sub_cols = QMenu("显示指标", menu)
@@ -2479,6 +2600,11 @@ class FloatLabel(QWidget):
         act_grid.setChecked(self.grid_visible)
         act_grid.toggled.connect(self.set_grid_visible)
         menu.addAction(act_grid)
+
+        act_through = QAction("鼠标穿透", menu, checkable=True)
+        act_through.setChecked(self.mouse_through_enabled)
+        act_through.toggled.connect(self.set_mouse_through)
+        menu.addAction(act_through)
 
         act_dual = QAction("双模式切换", menu, checkable=True)
         act_dual.setChecked(self.dual_mode_enabled)
@@ -2618,16 +2744,69 @@ class FloatLabel(QWidget):
         # 通过 raise_() 确保置顶；flags 中已包含 WindowStaysOnTopHint
         self.raise_()
 
-    def _register_hotkey(self):
+    def _do_register_hotkeys(self):
+        """一次性注册显示/隐藏与鼠标穿透两个全局快捷键，返回各键注册成否字典。"""
         try:
             keyboard.remove_all_hotkeys()
         except Exception:
             pass
-        keyboard.add_hotkey(self.hotkey.lower(),
-                            lambda: self.hotkey_triggered.emit())
+        status = {}
+        try:
+            status["show"] = bool(keyboard.add_hotkey(
+                self.hotkey.lower(), lambda: self.hotkey_triggered.emit()))
+        except Exception:
+            status["show"] = False
+        try:
+            # 回调走 set_mouse_through，会自动同步开关状态与菜单/设置面板
+            status["through"] = bool(keyboard.add_hotkey(
+                self.through_hotkey.lower(), lambda: self.set_mouse_through(
+                    not self.mouse_through_enabled)))
+        except Exception:
+            status["through"] = False
+        self._hotkey_ok = status
+        return status
+
+    def hotkey_register_status(self):
+        """供设置面板显示快捷键注册状态。"""
+        return self._hotkey_ok or {}
+
+    def set_mouse_through(self, enabled: bool):
+        """鼠标穿透：开启后浮窗忽略所有鼠标事件，点击直达下层窗口。
+        可随时用全局快捷键（默认 Ctrl+Alt+C）关闭。"""
+        enabled = bool(enabled)
+        if self.mouse_through_enabled == enabled:
+            return
+        self.mouse_through_enabled = enabled
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, enabled)
+        # 穿透下无法双击隐藏，退而暂停贴边检测，避免定时器对着不可见状态反复弹
+        if enabled and hasattr(self, 'edge_check_timer'):
+            try:
+                self.edge_check_timer.stop()
+            except Exception:
+                pass
+        self._rebuild_hotkeys()
+        self._notify_change()
+
+    def _rebuild_hotkeys(self):
+        # 注册状态变化不需要反复重建（穿透回调自身会走 set_mouse_through），
+        # 仅穿透开关切换时跳过，避免无意义的 remove/add 抖动
+        if getattr(self, "_in_toggle", False):
+            return
+        self._in_toggle = True
+        try:
+            self._do_register_hotkeys()
+        finally:
+            self._in_toggle = False
+
+    def _register_hotkey(self):
+        self._do_register_hotkeys()
 
     def update_hotkey(self, new_hotkey: str):
         self.hotkey = new_hotkey.strip()
+        self._register_hotkey()
+
+    def update_through_hotkey(self, new_hotkey: str):
+        self.through_hotkey = new_hotkey.strip()
         self._register_hotkey()
 
     def toggle_win(self):
