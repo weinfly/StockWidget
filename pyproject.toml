@@ -1,6 +1,6 @@
 [project]
 name = "stockwidget"
-version = "1.6.0"
+version = "1.6.1"
 description = "极简透明盯盘 Widget 浮窗（基于上游 sbr0574/StockWidget，Apache License 2.0）"
 license = { text = "Apache-2.0" }
 readme = "README.md"
