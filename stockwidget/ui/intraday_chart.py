@@ -317,7 +317,8 @@ class IntradayChart(QWidget):
     @staticmethod
     def _slot_time(slot):
         from stockwidget.core.intraday import _SLOTS
-        return _SLOTS[min(max(slot, 0), SLOT_COUNT - 1)]
+        t = _SLOTS[min(max(slot, 0), SLOT_COUNT - 1)]
+        return "%s:%s" % (t[:2], t[2:])
 
 
 class IntradayWindow(QWidget):
@@ -328,7 +329,10 @@ class IntradayWindow(QWidget):
         # 关闭即销毁（调用方通过 destroyed 信号释放引用，下次重新创建）
         self.setAttribute(Qt.WA_DeleteOnClose)
         self._code = code
-        self._thread = None
+        # 在抓线程集合；线程不挂 parent，防止窗口析构级联销毁运行中的线程
+        self._fetch_threads = set()
+        self._fetching_code = None
+        self._closed = False
         self.setWindowTitle("分时图")
         self.resize(760, 470)
         self.setMinimumSize(460, 300)
@@ -360,26 +364,47 @@ class IntradayWindow(QWidget):
         self._code = code
         self.chart.set_data(None)
         self.header.setText("加载中…")
-        self.refresh()
+        # 旧请求可能仍在飞：不能因“线程忙”跳过，另起一线程抓新代码，
+        # 旧响应回来后由 _on_fetched 按代码比对丢弃
+        self._start_fetch(code)
 
     def refresh(self):
-        # 上一次抓取未结束就跳过本轮，避免线程堆积；已销毁的 C++ 对象防 RuntimeError
-        try:
-            if self._thread is not None and self._thread.isRunning():
-                return
-        except RuntimeError:
-            self._thread = None
-        self._thread = IntradayFetchThread(self._code, self)
-        self._thread.fetched.connect(self._on_fetched)
-        self._thread.finished.connect(self._release_thread)
-        self._thread.start()
+        # 同一代码的上一次抓取未结束就跳过本轮，避免定时器叠加线程；
+        # 已销毁的 C++ 对象防 RuntimeError
+        if self._fetching_code == self._code:
+            try:
+                if any(th.isRunning() for th in self._fetch_threads):
+                    return
+            except RuntimeError:
+                pass
+        self._start_fetch(self._code)
 
-    def _release_thread(self):
-        th, self._thread = self._thread, None
-        if th is not None:
-            th.deleteLater()
+    def _start_fetch(self, code):
+        self._prune_threads()
+        self._fetching_code = code
+        th = IntradayFetchThread(code)  # 不设 parent
+        th.fetched.connect(lambda data, c=code: self._on_fetched(c, data))
+        # 线程自身结束后在工作线程里 deleteLater，不依赖窗口事件循环
+        th.finished.connect(th.deleteLater)
+        th.finished.connect(lambda th=th: self._release_thread(th))
+        self._fetch_threads.add(th)
+        th.start()
 
-    def _on_fetched(self, data):
+    def _prune_threads(self):
+        # 窗口可能长期不重绘，主动清理已结束待删除的线程包装，避免集合膨胀
+        self._fetch_threads = {
+            th for th in self._fetch_threads if not th.isFinished()}
+
+    def _release_thread(self, th):
+        # 线程对象已由 finished→deleteLater 自行销毁，这里仅移出集合
+        self._fetch_threads.discard(th)
+
+    def _on_fetched(self, code, data):
+        # 窗口已关闭：线程可能在销毁后才返回，避免访问已析构的 C++ 对象
+        if self._closed:
+            return
+        if code != self._code:
+            return  # 切股后旧代码的迟到响应，丢弃
         if not data:
             self.header.setText("<span style='color:#999'>%s 分时数据获取失败</span>"
                                 % self._code)
@@ -415,9 +440,13 @@ class IntradayWindow(QWidget):
 
     def closeEvent(self, event):
         self._timer.stop()
-        try:
-            if self._thread is not None and self._thread.isRunning():
-                self._thread.wait(3000)
-        except RuntimeError:
-            pass
+        self._closed = True
+        # 不在 UI 线程同步 wait()（网络最长阻塞 8 秒会卡死界面，
+        # 超时后销毁运行中的 QThread 会直接 abort 进程）；
+        # 线程未设 parent，窗口销毁后由 finished→deleteLater 自行收尾
+        for th in self._fetch_threads:
+            try:
+                th.requestInterruption()
+            except RuntimeError:
+                pass
         super().closeEvent(event)

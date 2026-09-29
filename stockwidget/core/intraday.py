@@ -10,9 +10,12 @@ qt 快照: qt[1]=名称 qt[3]=现价 qt[4]=昨收 qt[5]=今开。
 """
 
 import json
+import logging
 
 import requests
 from PySide6.QtCore import QThread, Signal
+
+logger = logging.getLogger(__name__)
 
 MINUTE_URL = "https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={code}"
 _UA = {"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"}
@@ -20,7 +23,8 @@ _UA = {"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"}
 # 标准分时横轴槽位: 上午 09:30-11:30 共 121 个点, 下午 13:01-15:00 共 120 个点
 _SLOTS = (
     ["%02d%02d" % (9 + (30 + m) // 60, (30 + m) % 60) for m in range(121)]
-    + ["%02d%02d" % (13 + (m - 1) // 60, (m - 1) % 60) for m in range(1, 121)]
+    + ["%02d%02d" % ((13 * 60 + m) // 60, (13 * 60 + m) % 60)
+       for m in range(1, 121)]
 )
 _SLOT_INDEX = {t: i for i, t in enumerate(_SLOTS)}
 SLOT_COUNT = len(_SLOTS)  # 241
@@ -67,7 +71,7 @@ def fetch_minute(code: str):
         avgs = [None] * SLOT_COUNT
         vols = [None] * SLOT_COUNT
         prev_cum_vol = None
-        cum_vol = cum_amt = None
+        cum_vol = None
         for raw in rows:
             parts = str(raw).split(" ")
             if len(parts) < 2:
@@ -79,6 +83,9 @@ def fetch_minute(code: str):
             if p is None:
                 continue
             prices[idx] = p
+            # 每行独立取值：北交所部分行缺累计额，若不重置会沿用
+            # 上一行的旧值，算出错误均价
+            cum_vol = cum_amt = None
             if len(parts) >= 3:
                 cum_vol = _f(parts[2])
             if len(parts) >= 4:
@@ -109,9 +116,10 @@ def fetch_minute(code: str):
         last_price = _f(qt[3]) if len(qt) > 3 else None
         if not last_price:
             last_price = ps[-1]
-        elif abs(ps[-1] - last_price) > 1e-9:
-            # 国内分时惯例：末点钉在现价/收盘价上（收盘集合竞价价
-            # 只体现在被丢弃的 15:01+ 盘后行里，15:00 行是旧价）
+        elif slots[-1] == SLOT_COUNT - 1 and abs(ps[-1] - last_price) > 1e-9:
+            # 国内分时惯例：收盘后把末点钉在收盘价上（收盘集合竞价价
+            # 只体现在被丢弃的 15:01+ 盘后行里，15:00 行是旧价）。
+            # 盘中最后一根是分钟旧价，不钉，否则 14:5x 点位会被现价顶歪
             ps[-1] = last_price
         return {
             "code": code,
@@ -125,6 +133,8 @@ def fetch_minute(code: str):
             "vols": vs,
         }
     except Exception:
+        # 网络/HTTP/接口结构变更都走这里；留日志便于区分偶发抖动与接口失效
+        logger.warning("fetch_minute failed for %s", code, exc_info=True)
         return None
 
 
