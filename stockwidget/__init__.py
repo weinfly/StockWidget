@@ -10,3 +10,13 @@ StockWidget
 
 官方仓库地址: https://github.com/sbr0574/StockWidget
 """
+
+# ---- 版本与出处信息（供“关于”页、README 等统一引用）----
+__version__ = "1.4.2"
+
+# 原始作者与官方仓库（再分发时必须保留，详见 LICENSE / NOTICE）
+UPSTREAM_AUTHOR = "sbr0574"
+UPSTREAM_REPO = "https://github.com/sbr0574/StockWidget"
+UPSTREAM_REPO_GITEE = "https://gitee.com/sbr0574/StockWidget"
+LICENSE_NAME = "Apache License 2.0"
+LICENSE_URL = "http://www.apache.org/licenses/LICENSE-2.0"

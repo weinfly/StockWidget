@@ -1,7 +1,8 @@
 [project]
 name = "stockwidget"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.4.2"
+description = "极简透明盯盘 Widget 浮窗（基于上游 sbr0574/StockWidget，Apache License 2.0）"
+license = { text = "Apache-2.0" }
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [

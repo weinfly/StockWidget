@@ -4,6 +4,8 @@
 
 > 适合贴在屏幕一角随时查看 👀
 
+> **出处与致谢**：本项目基于上游开源项目 **[sbr0574/StockWidget](https://github.com/sbr0574/StockWidget)**（[Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)）二次开发，当前版本 **v1.4.2**。感谢原始作者 **sbr0574**。再分发相关约定见文末 [许可与出处声明](#-许可与出处声明)。
+
 ---
 
 ## ✨ 功能概览
@@ -84,6 +86,8 @@ pip install -r requirements.txt
 ```
 StockWidget/
 ├── main.py                      # 启动入口
+├── LICENSE                      # Apache License 2.0 全文（再分发必须保留）
+├── NOTICE                       # 版权与再分发声明：原作者/仓库（必须保留）
 ├── requirements.txt             # pip 依赖清单
 ├── pyproject.toml               # uv/pyproject 依赖配置
 ├── StockWidget.spec             # PyInstaller 打包配置
@@ -141,7 +145,7 @@ pyinstaller .\StockWidget.spec --noconfirm
 
 ## ⚙️ 设置面板
 
-设置面板分为 6 个页签：
+设置面板分为 7 个页签：
 
 - **自选列表**：代码增/删/改/上移/下移；选中条目可通过按钮或**右键菜单**设置**持仓成本**与**封单预警**。代码自动规格化并去重，支持智能识别（详见面板内“使用说明”页）：
   - A 股/美股：纯数字或字母（`600519`、`AAPL`）
@@ -156,6 +160,7 @@ pyinstaller .\StockWidget.spec --noconfirm
 - **常规**：全局快捷键自定义；开机启动；窗口锚点（左/右对齐）；程序图标（默认/系统图标/自定义 `.ico`）。
 - **报警**：涨跌异动报警（多规则：周期+阈值%+冷却）；新高/新低报警；涨/跌停通知（到达/离开分别开关）；均带冷却时间防刷屏。
 - **使用说明**：代码智能输入指南。
+- **关于**：显示版本号、原始作者、官方仓库地址、许可协议（Apache License 2.0）及再分发声明（需保留 LICENSE/NOTICE 并注明原作者与仓库）。
 
 > 修改**实时生效**，即时保存至 `SW_config.json`。
 
@@ -186,8 +191,17 @@ pyinstaller .\StockWidget.spec --noconfirm
 
 ---
 
-## 📜 许可
+## 📜 许可与出处声明
 
-- 个人/学习用途自由使用；涉及第三方数据源时请遵守其使用条款。
+本项目基于上游开源项目 **[sbr0574/StockWidget](https://github.com/sbr0574/StockWidget)** 二次开发，遵循 **Apache License 2.0**（见仓库根目录 [`LICENSE`](LICENSE) 文件）。
+
+- **原始作者**：sbr0574
+- **官方仓库**：https://github.com/sbr0574/StockWidget （镜像：https://gitee.com/sbr0574/StockWidget）
+- **许可协议**：[Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)
+
+**再分发（转载/镜像/打包发布）要求**：依据 Apache License 2.0 第 4 节，对本软件的全部或部分（含源码、编译产物、打包发布）进行再分发时，**必须保留 [`LICENSE`](LICENSE) 与 [`NOTICE`](NOTICE) 文件**，并在显著位置注明原始作者（**sbr0574**）与官方仓库地址（https://github.com/sbr0574/StockWidget）。详细条文见 [`NOTICE`](NOTICE)。
+
+- 个人/学习用途自由使用；涉及第三方数据源（新浪财经等）时请遵守其使用条款。
+- 本程序按“现状”提供，不含任何明示或暗示的保证；行情数据仅供参考，不构成投资建议。
 
 ---

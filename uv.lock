@@ -2844,7 +2844,7 @@ wheels = [
 
 [[package]]
 name = "stockwidget"
-version = "0.1.0"
+version = "1.4.2"
 source = { virtual = "." }
 dependencies = [
     { name = "keyboard" },

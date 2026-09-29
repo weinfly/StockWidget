@@ -298,6 +298,8 @@ class FloatLabel(QWidget):
         self.codes = [str(c).strip() for c in codes_cfg if str(c).strip()]
         self.checked_codes = [str(c).strip() for c in checked_codes_cfg if (
             str(c).strip() and str(c).strip() in self.codes)]
+        # 与模型行一一对应的实际代码（解析时可能跳过部分股票，故不能直接用 checked_codes）
+        self._row_codes = list(self.checked_codes)
         self.font = QFont(font_family, max(8, min(15, font_size)))
         self.bg = QColor(bg["r"], bg["g"], bg["b"], bg["a"])
 
@@ -334,6 +336,10 @@ class FloatLabel(QWidget):
             Qt.WA_TransparentForMouseEvents, True)
         self.table.setTextElideMode(Qt.ElideNone)
         self.table.setItemDelegate(NoSelectionDelegate())
+        # 表格自身不处理右键菜单，确保事件冒泡到 FloatLabel.contextMenuEvent
+        # （否则某些情况下 QTableView 会吞掉右键、导致自定义菜单不出现）
+        self.table.setContextMenuPolicy(Qt.NoContextMenu)
+        self.table.viewport().setContextMenuPolicy(Qt.NoContextMenu)
 
         # 获取表格当前的调色板
         palette = self.table.palette()
@@ -415,10 +421,12 @@ class FloatLabel(QWidget):
 
         if (modifiers & Qt.ControlModifier) and (col == 0):
             rows = index.row()
-            code = self.checked_codes[rows]
-            url = self._get_xueqiu_url(code)
-            print(url)
-            webbrowser.open(url)
+            row_codes = getattr(self, "_row_codes", self.checked_codes)
+            if 0 <= rows < len(row_codes):
+                code = row_codes[rows]
+                url = self._get_xueqiu_url(code)
+                print(url)
+                webbrowser.open(url)
 
     def _get_sina_url(self, code):
         # 1. A 股股票 (sh/sz) -> 标准行情页
@@ -487,6 +495,25 @@ class FloatLabel(QWidget):
         if code.startswith(('hf_', 'nf_')):
             f_code = code.split('_')[1].upper()
             return f"https://finance.sina.com.cn/futures/quotes/{f_code}.shtml"
+
+    def _get_tencent_url(self, code):
+        """将各类资产代码转换为腾讯证券个股网页 URL"""
+        # 1. A 股 / 指数 / ETF / LOF (sh/sz/bj 开头) -> 腾讯行情页
+        if code.startswith(('sh', 'sz', 'bj')):
+            return f"https://gu.qq.com/{code}/s"
+
+        # 2. 港股 (rt_hk 开头) -> hk + 代码 (如 hk00700)
+        if code.startswith('rt_hk'):
+            hk_code = code.replace('rt_hk', '')
+            return f"https://gu.qq.com/hk{hk_code}/s"
+
+        # 3. 美股 (gb_ 开头) -> us + 代码 (如 usAAPL)
+        if code.startswith('gb_'):
+            us_code = code.replace('gb_', '').upper()
+            return f"https://gu.qq.com/us{us_code}/s"
+
+        # 4. 兜底：直接以原始代码拼接腾讯行情页
+        return f"https://gu.qq.com/{code}/s"
 
     def _check_edge_and_hide(self):
         try:
@@ -997,6 +1024,7 @@ class FloatLabel(QWidget):
 
         price_data = []
         sign_data = []
+        row_codes = []          # 与 price_data 逐行对应的完整代码（如 sh600030 / rt_hk00700）
         total_pnl = 0.0
         has_pnl = False
         url = 'https://hq.sinajs.cn/list=' + label
@@ -1481,6 +1509,9 @@ class FloatLabel(QWidget):
                     k_payload
                 ])
 
+            # 记录本行对应的完整代码（从响应变量名前缀还原，与 checked_codes/URL 函数格式一致）
+            row_codes.append(prefix_part.split('str_')[-1])
+
             # 构建信号灯数据保持不变
             sign_data.append({
                 "delta": (change > 0) - (change < 0),
@@ -1493,7 +1524,7 @@ class FloatLabel(QWidget):
                 "low": (low_price > prev_close) - (low_price < prev_close) if prev_close else 0,
             })
 
-        return price_data, sign_data, total_pnl, has_pnl
+        return price_data, sign_data, total_pnl, has_pnl, row_codes
 
     def _project_columns(self, full_rows, sign_data):
         # 从 ALL_HEADERS 中按显示顺序筛选已启用的列（使用双模式感知的可见性）
@@ -1530,7 +1561,7 @@ class FloatLabel(QWidget):
 
     def _refresh_from_function(self):
         try:
-            full_rows, sign, total_pnl, has_pnl = self._get_price(
+            full_rows, sign, total_pnl, has_pnl, row_codes = self._get_price(
                 self.checked_codes)
         except Exception as e:
             try:
@@ -1547,6 +1578,8 @@ class FloatLabel(QWidget):
             self._clear_error()
         except Exception:
             pass
+        # 保存与模型行对齐的实际代码列表，供右键/Ctrl+点击取用
+        self._row_codes = list(row_codes)
         self._project_columns(full_rows, sign)
         # 通知外部更新总盈亏指示（用于托盘图标红绿灯泡）
         try:
@@ -2393,6 +2426,34 @@ class FloatLabel(QWidget):
     # ----- 交互 -----
     def contextMenuEvent(self, event):
         menu = QMenu(self)
+
+        # 定位右键命中的股票行（表格子控件未处理的右键事件会冒泡到这里）
+        hit_index = self.table.indexAt(
+            self.table.viewport().mapFromGlobal(event.globalPos()))
+        row_codes = getattr(self, "_row_codes", self.checked_codes)
+        open_code = None
+        if hit_index.isValid() and 0 <= hit_index.row() < len(row_codes):
+            open_code = row_codes[hit_index.row()]
+
+        # 在网页打开（腾讯/新浪）：仅当右键落在具体股票行时可用
+        sub_web = QMenu("在网页打开", menu)
+        if open_code:
+            sub_web.setTitle(f"在网页打开 - {open_code}")
+            act_tx = QAction("腾讯股票", sub_web)
+            act_tx.triggered.connect(
+                lambda _=False, c=open_code: webbrowser.open(self._get_tencent_url(c)))
+            sub_web.addAction(act_tx)
+            act_sina = QAction("新浪股票", sub_web)
+            act_sina.triggered.connect(
+                lambda _=False, c=open_code: webbrowser.open(self._get_sina_url(c)))
+            sub_web.addAction(act_sina)
+        else:
+            act_none = QAction("（请右键某只股票后操作）", sub_web)
+            act_none.setEnabled(False)
+            sub_web.addAction(act_none)
+        menu.addMenu(sub_web)
+        menu.addSeparator()
+
         sub_cols = QMenu("显示指标", menu)
         for name in self.ALL_HEADERS:
             if name == "卖一":

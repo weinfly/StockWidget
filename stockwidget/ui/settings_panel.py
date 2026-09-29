@@ -12,6 +12,9 @@ from PySide6.QtWidgets import (
 )
 from stockwidget.ui.widget_panel import FloatLabel
 from PySide6.QtWidgets import QSizePolicy
+from stockwidget import (
+    __version__, UPSTREAM_AUTHOR, UPSTREAM_REPO, UPSTREAM_REPO_GITEE,
+    LICENSE_NAME, LICENSE_URL)
 
 
 class CostDialog(QDialog):
@@ -220,6 +223,8 @@ class SettingsDialog(QDialog):
             2: QSize(480, 460),
             3: QSize(480, 280),
             4: QSize(480, 720),
+            5: QSize(520, 480),
+            6: QSize(560, 520),
         }
         self._apply_tab_size(0)
 
@@ -953,6 +958,61 @@ class SettingsDialog(QDialog):
         # 4. 把这个说明页挂载到 Tab 栏
         self.tabs.addTab(tab_help, "使用说明")
 
+        # ---- 第六页：关于 ----
+        tab_about = QWidget()
+        lay_about = QVBoxLayout(tab_about)
+        lay_about.setContentsMargins(5, 5, 5, 5)
+
+        scroll_about = QScrollArea()
+        scroll_about.setWidgetResizable(True)
+        scroll_about.setStyleSheet(
+            "QScrollArea { border: none; background-color: transparent; }")
+
+        about_html = f"""
+        <div style="line-height: 1.7; font-size: 13px; color: #333333; padding: 12px;">
+            <h2 style="color: #2B579A; margin-top: 0; margin-bottom: 4px;">StockWidget</h2>
+            <p style="margin: 0 0 12px 0; color: #666666;">极简透明盯盘 Widget 浮窗</p>
+
+            <table border="0" cellpadding="6" cellspacing="0" style="width: 100%; border-collapse: collapse;">
+                <tr><td style="width: 96px; color: #888888;"><b>版本号</b></td>
+                    <td><b>{__version__}</b></td></tr>
+                <tr style="background-color: #F8F9FA;"><td style="color: #888888;"><b>原始作者</b></td>
+                    <td>{UPSTREAM_AUTHOR}</td></tr>
+                <tr><td style="color: #888888;"><b>官方仓库</b></td>
+                    <td><a href="{UPSTREAM_REPO}">{UPSTREAM_REPO}</a><br/>
+                        <a href="{UPSTREAM_REPO_GITEE}">{UPSTREAM_REPO_GITEE}</a></td></tr>
+                <tr style="background-color: #F8F9FA;"><td style="color: #888888;"><b>许可协议</b></td>
+                    <td><a href="{LICENSE_URL}">{LICENSE_NAME}</a></td></tr>
+            </table>
+
+            <div style="margin-top: 18px; padding: 12px; background-color: #FFF3CD; border-left: 4px solid #FFC107; border-radius: 4px;">
+                <b>© 版权声明与再分发要求</b><br/>
+                本程序基于上游项目 <b>{UPSTREAM_AUTHOR}/StockWidget</b>（{LICENSE_NAME}）开发。依据
+                {LICENSE_NAME} 第 4 节（Redistribution），对本软件的全部或部分
+                （含源码、转载、镜像、编译产物、打包发布）进行再分发时，<b>必须保留
+                <code>LICENSE</code> 与 <code>NOTICE</code> 文件</b>，并在显著位置注明
+                原始作者（<b>{UPSTREAM_AUTHOR}</b>）与官方仓库地址
+                （<a href="{UPSTREAM_REPO}">{UPSTREAM_REPO}</a>）。
+            </div>
+
+            <p style="margin-top: 14px; color: #888888; font-size: 12px;">
+                本程序按“现状”提供，不含任何明示或暗示的保证。行情数据来自第三方接口，
+                仅供参考，不构成任何投资建议。
+            </p>
+        </div>
+        """
+
+        lbl_about = QLabel(about_html)
+        lbl_about.setWordWrap(True)
+        lbl_about.setTextFormat(Qt.RichText)
+        lbl_about.setOpenExternalLinks(True)  # 点击链接用默认浏览器打开
+        lbl_about.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+
+        scroll_about.setWidget(lbl_about)
+        lay_about.addWidget(scroll_about)
+
+        self.tabs.addTab(tab_about, "关于")
+
         # ---- 连接 ----
         # 连接：代码列表
         self.list_codes.itemChanged.connect(self._on_codes_changed)
@@ -1428,8 +1488,10 @@ class SettingsDialog(QDialog):
             need_w = inner.sizeHint().width() + TAB_CHROME_W
             screen = QApplication.primaryScreen().availableGeometry()
             limit_h = min(screen.height() - 60, TAB_MAX_H)
-            target_size.setWidth(int(max(target_size.width(), min(need_w, screen.width() - 60))))
-            target_size.setHeight(int(max(target_size.height(), min(need_h, limit_h))))
+            target_size.setWidth(
+                int(max(target_size.width(), min(need_w, screen.width() - 60))))
+            target_size.setHeight(
+                int(max(target_size.height(), min(need_h, limit_h))))
 
         # 1. 临时解除主窗口所有的尺寸锁定，为变形做准备
         self.setMinimumSize(0, 0)
